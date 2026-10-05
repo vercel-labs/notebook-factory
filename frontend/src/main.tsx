@@ -354,18 +354,14 @@ function App() {
         if (!stopped) retry = window.setTimeout(connect, Math.min(30_000, 1000 * 2 ** attempts++));
       };
     };
+    // Each reconnect receives a fresh snapshot, so no HTTP refresh is needed while disconnected.
     connect();
-    // Retain the current sidebar on transient failure; poll only while the socket is down.
-    const timer = window.setInterval(() => {
-      if (socket?.readyState !== WebSocket.OPEN) void refreshSidebar().catch(() => {});
-    }, 30_000);
     return () => {
       stopped = true;
       window.clearTimeout(retry);
-      window.clearInterval(timer);
       socket?.close();
     };
-  }, [applyWorkspace, refreshSidebar]);
+  }, [applyWorkspace]);
   useEffect(() => {
     const url = new URL(location.href);
     url.pathname = about ? "/about" : "/";
