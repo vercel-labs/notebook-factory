@@ -129,13 +129,13 @@ The rendered iframe and API response both enforce sandboxing. The CSP blocks net
 
 ## Authentication
 
-[[backend/auth.py]] uses Vercel OIDC and signed, expiring cookies. [[backend/auth.py#require_user]] admits signed-in Vercel users; [[backend/auth.py#require_owner]] additionally checks notebook ownership on every notebook mutation. Both require the exact application Origin.
+[[backend/auth.py]] uses Vercel OIDC and signed, expiring cookies. [[backend/auth.py#require_user]] admits signed-in Vercel users; [[backend/auth.py#require_owner]] additionally checks notebook ownership on every notebook mutation. Both require an Origin from [[backend/config.py#trusted_origin]]: the canonical APP_URL, plus the deployment and branch URLs on previews.
 
-Sign-in requests only openid/profile scopes. The redirect flow omits response_mode to use Vercel’s default query response; explicitly passing query is rejected by the provider. Configuration errors are distinguished from denied consent. Authorization code exchange uses PKCE S256 and a client secret. [[backend/auth.py#verify_identity]] validates RS256 signatures against Vercel’s fixed JWKS endpoint, issuer, audience, expiry, nonce, and authorized party. A signed flow cookie expires after ten minutes; the signed session contains only provider and subject and expires after seven days. Cookies are HttpOnly, SameSite=Lax, and Secure on HTTPS. Provider tokens are never persisted. The verified profile supplies username and avatar, with an initial fallback when no image loads.
+Sign-in returns to the deployment that started it: [[backend/config.py#served_origin]] picks the allowed origin the request reached, and the signed flow cookie carries that exact redirect_uri into the token exchange. Sign-in requests only openid/profile scopes. The redirect flow omits response_mode to use Vercel’s default query response; explicitly passing query is rejected by the provider. Configuration errors are distinguished from denied consent. Authorization code exchange uses PKCE S256 and a client secret. [[backend/auth.py#verify_identity]] validates RS256 signatures against Vercel’s fixed JWKS endpoint, issuer, audience, expiry, nonce, and authorized party. A signed flow cookie expires after ten minutes; the signed session contains only provider and subject and expires after seven days. Cookies are HttpOnly, SameSite=Lax, and Secure on HTTPS. Provider tokens are never persisted. The verified profile supplies username and avatar, with an initial fallback when no image loads.
 
 Ownership uses the registered user slot bound to a unique Vercel subject ID. Username changes update display identity without changing ownership or the stored Sandbox name. The frontend hides editing controls for other users, while the backend rejects cross-owner calls even with a valid editor token. There is no development authentication bypass.
 
-Public notebook metadata excludes drafts, editor capabilities, and leases. Responses use no-store caching and no-referrer headers. Logout requires the configured Origin, and the UI disables logout while an editor is open.
+Public notebook metadata excludes drafts, editor capabilities, and leases. Responses use no-store caching and no-referrer headers. Logout requires an allowed Origin, and the UI disables logout while an editor is open.
 
 ## API contracts
 
@@ -238,6 +238,10 @@ Runtime tests prove two notebooks owned by one user share a VM while a second us
 ## Vercel sign-in tests
 
 [[backend/tests/test_auth.py]] checks PKCE exchange and signed sessions, rejects invalid signature/issuer/audience/nonce/expiry, rejects old GitHub cookies, and proves failed state or denied consent never exchanges a code.
+
+### Preview deployments sign in on their own origin
+
+A request forwarded for an allowed preview host gets that host's callback as redirect_uri in both authorize and token exchange, and returns to `/`. Unknown hosts fall back to APP_URL; mutations accept preview origins only.
 
 ## Sidebar refresh tests
 
