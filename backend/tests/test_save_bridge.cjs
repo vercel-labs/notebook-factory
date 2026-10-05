@@ -19,7 +19,7 @@ function bridge(context, content, url = "https://sandbox.test/token/doc/tree/not
     window, URL, WeakSet, Promise,
     document: { documentElement: {} },
     ResizeObserver: class { observe() {} },
-    __PARENT_ORIGIN__: 'https://app.test',
+    __PARENT_ORIGINS__: ['https://app.test'],
   });
   return { handlers, parent, shell };
 }

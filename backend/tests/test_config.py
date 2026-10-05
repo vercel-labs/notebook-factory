@@ -74,3 +74,37 @@ async def test_connections_close_on_success_and_error(monkeypatch, tmp_path):
             raise RuntimeError('operation failed')
     assert len(closed) == 2
     await engine.dispose()
+
+
+def _deployed_config(monkeypatch, env, **values):
+    monkeypatch.setitem(sys.modules, 'dotenv', types.SimpleNamespace(load_dotenv=lambda *_: None))
+    for name in ('APP_URL', 'VERCEL_URL', 'VERCEL_BRANCH_URL'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('VERCEL', '1')
+    monkeypatch.setenv('VERCEL_ENV', env)
+    monkeypatch.setenv('SESSION_SECRET', 'x' * 32)
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@db.example:5432/app')
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    return runpy.run_path(str(Path(__file__).parents[1] / 'config.py'))
+
+
+# @lat: [[deployment#Environment configuration#Preview origins]]
+def test_preview_origins_come_from_the_deployment(monkeypatch):
+    import pytest
+
+    config = _deployed_config(monkeypatch, 'preview', VERCEL_URL='app-abc.vercel.app', VERCEL_BRANCH_URL='app-git-x.vercel.app')
+    assert config['APP_URL'] == 'https://app-git-x.vercel.app'
+    assert config['ALLOWED_ORIGINS'] == ('https://app-git-x.vercel.app', 'https://app-abc.vercel.app')
+    served = config['served_origin']
+
+    def request(**headers):
+        return types.SimpleNamespace(headers=headers, url=types.SimpleNamespace(scheme='http'))
+
+    assert served(request(**{'x-forwarded-host': 'app-abc.vercel.app', 'x-forwarded-proto': 'https'})) == 'https://app-abc.vercel.app'
+    assert served(request(**{'x-forwarded-host': 'attacker.example', 'x-forwarded-proto': 'https'})) == 'https://app-git-x.vercel.app'
+    # Production never trusts deployment URLs; it requires the canonical HTTPS APP_URL.
+    config = _deployed_config(monkeypatch, 'production', VERCEL_URL='app-abc.vercel.app', APP_URL='https://example.com')
+    assert config['ALLOWED_ORIGINS'] == ('https://example.com',)
+    with pytest.raises(RuntimeError, match='HTTPS APP_URL'):
+        _deployed_config(monkeypatch, 'production', VERCEL_URL='app-abc.vercel.app')

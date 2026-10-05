@@ -13,7 +13,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from sqlalchemy import select
 
 from accounts import enroll, from_session
-from config import APP_URL, SECRET, chat_model
+from config import SECRET, chat_model, served_origin, trusted_origin
 from db import engine, notebooks
 
 router = APIRouter(prefix="/api/auth")
@@ -41,7 +41,7 @@ async def require_user(request: Request):
     current = user(request)
     if not current:
         raise HTTPException(401, "Sign in with Vercel first")
-    if request.headers.get("origin") != APP_URL:
+    if not trusted_origin(request.headers.get("origin")):
         raise HTTPException(403, "Invalid request origin")
     return await from_session(current)
 
@@ -59,9 +59,9 @@ async def require_owner(request: Request):
     return current
 
 
-def cookie(response, name, value, age):
+def cookie(request, response, name, value, age):
     response.set_cookie(
-        name, value, max_age=age, httponly=True, secure=APP_URL.startswith("https://"),
+        name, value, max_age=age, httponly=True, secure=served_origin(request).startswith("https://"),
         samesite="lax", path="/",
     )
 
@@ -87,17 +87,20 @@ async def me(request: Request):
 
 
 @router.get("/login")
-async def login():
+async def login(request: Request):
     client_id, _ = credentials()
     flow = {key: secrets.token_urlsafe(32) for key in ("state", "nonce", "verifier")}
+    # Return to the deployment that started sign-in. The Vercel App's project callback accepts
+    # every deployment domain; the token exchange must repeat this exact redirect_uri.
+    flow["redirect_uri"] = served_origin(request) + "/api/auth/callback"
     challenge = base64.urlsafe_b64encode(hashlib.sha256(flow["verifier"].encode()).digest()).rstrip(b"=").decode()
     response = RedirectResponse(AUTHORIZE_URL + "?" + urlencode({
-        "client_id": client_id, "redirect_uri": APP_URL + "/api/auth/callback",
+        "client_id": client_id, "redirect_uri": flow["redirect_uri"],
         "response_type": "code", "scope": "openid profile",
         "state": flow["state"], "nonce": flow["nonce"],
         "code_challenge": challenge, "code_challenge_method": "S256",
     }))
-    cookie(response, FLOW_COOKIE, signer.dumps(flow, salt="vercel-oauth"), 600)
+    cookie(request, response, FLOW_COOKIE, signer.dumps(flow, salt="vercel-oauth"), 600)
     return response
 
 
@@ -134,7 +137,7 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
             flow = signer.loads(request.cookies.get(FLOW_COOKIE, ""), salt="vercel-oauth", max_age=600)
             if not isinstance(flow, dict) or not state or not secrets.compare_digest(state, flow["state"]):
                 raise ValueError()
-            if not all(isinstance(flow.get(key), str) and flow[key] for key in ("nonce", "verifier")):
+            if not all(isinstance(flow.get(key), str) and flow[key] for key in ("nonce", "verifier", "redirect_uri")):
                 raise ValueError()
         except (BadSignature, ValueError, KeyError, TypeError):
             raise HTTPException(400, "Invalid or expired sign-in state. Please try again.") from None
@@ -152,7 +155,7 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
             token = await client.post(TOKEN_URL, data={
                 "grant_type": "authorization_code", "client_id": client_id,
                 "client_secret": client_secret, "code": code, "code_verifier": flow["verifier"],
-                "redirect_uri": APP_URL + "/api/auth/callback",
+                "redirect_uri": flow["redirect_uri"],
             })
             if token.status_code != 200:
                 raise HTTPException(400, "Vercel sign-in failed. Please try again.")
@@ -161,8 +164,8 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
                 raise HTTPException(400, "Vercel did not return a valid identity token")
             identity = await verify_identity(client, data["id_token"], client_id, flow["nonce"])
         account = await enroll(identity)
-        response = RedirectResponse(APP_URL, status_code=303)
-        cookie(response, COOKIE, signer.dumps({"provider": "vercel", "sub": account["vercel_id"]}, salt=SESSION_SALT), 604800)
+        response = RedirectResponse("/", status_code=303)
+        cookie(request, response, COOKIE, signer.dumps({"provider": "vercel", "sub": account["vercel_id"]}, salt=SESSION_SALT), 604800)
     except (httpx.HTTPError, ValueError):
         response = JSONResponse({"detail": "Vercel sign-in is temporarily unavailable. Please try again."}, status_code=502)
     except HTTPException as failure:
@@ -173,9 +176,9 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
 
 @router.post("/logout")
 async def logout(request: Request):
-    if request.headers.get("origin") != APP_URL:
+    if not trusted_origin(request.headers.get("origin")):
         raise HTTPException(403, "Invalid request origin")
-    response = RedirectResponse(APP_URL, status_code=303)
+    response = RedirectResponse("/", status_code=303)
     response.delete_cookie(COOKIE, path="/")
     response.delete_cookie(FLOW_COOKIE, path="/")
     return response

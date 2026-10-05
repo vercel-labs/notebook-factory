@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from vercel import sandbox
 from vercel.api import session
 
-from config import APP_URL, MAX_BYTES
+from config import ALLOWED_ORIGINS, MAX_BYTES
 from runtime_registry import load_runtime, runtime_lease, store_runtime
 from sandbox_environment import prepared
 
@@ -84,7 +84,7 @@ async def _start_runtime(owner, report=lambda kind, message: None):
                 content = (
                     (ASSETS / filename)
                     .read_text()
-                    .replace("__PARENT_ORIGIN__", json.dumps(APP_URL))
+                    .replace("__PARENT_ORIGINS__", json.dumps(list(ALLOWED_ORIGINS)))
                 )
                 files[target] = content
             settings = {
@@ -147,7 +147,7 @@ async def _start_runtime(owner, report=lambda kind, message: None):
                     + json.dumps(
                         {
                             "headers": {
-                                "Content-Security-Policy": f"frame-ancestors {APP_URL}",
+                                "Content-Security-Policy": "frame-ancestors " + " ".join(ALLOWED_ORIGINS),
                                 "Referrer-Policy": "no-referrer",
                             }
                         }

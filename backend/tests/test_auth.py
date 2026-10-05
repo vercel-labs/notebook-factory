@@ -109,3 +109,29 @@ def test_provider_configuration_error_is_not_reported_as_denied(oauth):
     assert 'invalid_request' in response.json()['detail']
     assert 'declined' not in response.json()['detail']
     assert not oauth['requests']
+
+
+# @lat: [[architecture#Vercel sign-in tests#Preview deployments sign in on their own origin]]
+def test_preview_deployment_signs_in_on_its_own_origin(oauth, monkeypatch):
+    import config
+
+    preview = 'https://app-git-x.vercel.app'
+    monkeypatch.setattr(config, 'ALLOWED_ORIGINS', (config.APP_URL, preview))
+    client = oauth['client']
+    client.base_url = 'https://testserver'  # Secure cookies on an HTTPS preview
+    forwarded = {'x-forwarded-host': 'app-git-x.vercel.app', 'x-forwarded-proto': 'https'}
+    response = client.get('/api/auth/login', headers=forwarded, follow_redirects=False)
+    params = parse_qs(urlsplit(response.headers['location']).query)
+    assert params['redirect_uri'] == [preview + '/api/auth/callback']
+    oauth['nonce'] = params['nonce'][0]
+    callback = client.get('/api/auth/callback', headers=forwarded, params={
+        'code': 'test-code', 'state': params['state'][0],
+    }, follow_redirects=False)
+    assert callback.status_code == 303 and callback.headers['location'] == '/'
+    assert parse_qs(oauth['requests'][0].content.decode())['redirect_uri'] == [preview + '/api/auth/callback']
+    # Unknown hosts never steer the callback; the canonical origin is used instead.
+    spoofed = client.get('/api/auth/login', headers={'x-forwarded-host': 'attacker.example'}, follow_redirects=False)
+    assert parse_qs(urlsplit(spoofed.headers['location']).query)['redirect_uri'] == [config.APP_URL + '/api/auth/callback']
+    # Mutations accept any of the deployment's origins and nothing else (422: past the gate).
+    assert client.post('/api/notebooks', json={}, headers={'origin': preview}).status_code == 422
+    assert client.post('/api/notebooks', json={}, headers={'origin': 'https://attacker.example'}).status_code == 403
