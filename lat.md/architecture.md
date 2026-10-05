@@ -53,7 +53,8 @@ The two FastAPI nodes represent the same backend service. The dependency drive c
 | Vercel Sandbox | Run notebook Python and JupyterLab in one non-persistent VM per user with separate notebook kernels, a durable writable workspace drive, and a read-only dependency drive. The backend injects the current private draft and fresh editor assets. | [[backend/editor.py#start]], [[editing#Prepared dependency environment]] |
 | Vercel Blob | Serve immutable published HTML through the CDN and store the prepared font bundle used to build dependency drives. | [[backend/publication.py#upload]], [[deployment#Published HTML in Blob]], [[editing#Plot font fallback]] |
 | Vercel AI Gateway and AI SDK | Route configured model inference and stream assistant responses; browser tools apply cell edits and execution through the authenticated Jupyter bridge. | [[backend/chat.py#stream]], [[frontend/src/Chat.tsx#Chat]], [[chat#Live document tools]] |
-| Vercel deployment identity | Supply OIDC for backend Sandbox and Gateway access. Blob uses its backend-only read/write token; database and OAuth credentials remain backend configuration. | [[backend/main.py#headers]], [[deployment#Environment configuration]] |
+| Vercel Queues | Signal sidebar metadata changes to every API instance holding live sidebar WebSockets. | [[backend/workspace_events.py#notify]], [[architecture#Live sidebar updates]] |
+| Vercel deployment identity | Supply OIDC for backend Sandbox, Gateway, and Queues access. Blob uses its backend-only read/write token; database and OAuth credentials remain backend configuration. | [[backend/main.py#headers]], [[deployment#Environment configuration]] |
 | Supabase via Vercel Marketplace | Persist notebook drafts, published source and fallback HTML, chat history, editor session records, and operation leases across requests and deployments. | [[backend/db.py]], [[architecture#Persistence]], [[chat#Persistent conversations]] |
 
 ### Main data flows
@@ -144,6 +145,8 @@ Public notebook metadata excludes drafts, editor capabilities, and leases. Respo
 | Route | Contract |
 | --- | --- |
 | `GET /api/notebooks` | Public metadata including owner ID, ordered by publication update time |
+| `GET /api/workspace` | Public users and minimal notebook metadata for the sidebar |
+| `WS /api/workspace/live` | Same-origin socket; pushes the workspace snapshot on connect and after each change |
 | `GET /api/users` | Alphabetical public user IDs, usernames, and avatars |
 | `POST /api/notebooks/{id}/fork` | Enrolled caller copies published notebook content into a new owned notebook, without chat or editor state |
 | `POST /api/notebooks/{id}/chat-history` | Public read-only history, optionally the latest 50 messages |
@@ -193,7 +196,7 @@ Published and editor iframes scroll internally rather than imposing minimum heig
 
 ## Workspace startup
 
-The public sidebar renders independently of authentication and refreshes every 30 seconds. A five-minute, tab-local metadata cache lets return visits show the sidebar immediately while fresh metadata loads.
+The public sidebar renders independently of authentication and updates live over a WebSocket. A five-minute, tab-local metadata cache lets return visits show the sidebar immediately while fresh metadata loads.
 
 [[frontend/src/main.tsx#cachedNotebooks]] stores only the public list and published render URLs in session storage. Auth and edit permissions are never cached. Fresh list responses replace cached entries and reconcile selection; unavailable storage falls back to normal loading.
 
@@ -223,7 +226,7 @@ Postgres enrollment uses a transaction advisory lock around identity lookup, cap
 
 [[backend/main.py#workspace]] returns users and minimal notebook metadata in one users-to-notebooks outer join, retaining empty user groups and omitting source, HTML, chat, and editor data.
 
-The browser refreshes this single endpoint every 30 seconds with overlapping requests coalesced; failures retain the existing sidebar until the next retry. Group expansion and running editors remain unchanged.
+The browser loads this endpoint at startup, then receives the same payload live; see [[architecture#Live sidebar updates]]. Group expansion and running editors remain unchanged.
 
 The sidebar expands the current user's avatar/name group first, followed by other users alphabetically and collapsed by default. Search expands matching groups; notebook selection retains background editors and agent sessions.
 
@@ -245,7 +248,23 @@ A request forwarded for an allowed preview host gets that host's callback as red
 
 ## Sidebar refresh tests
 
-The workspace endpoint uses one metadata-only outer join, includes users without notebooks, and returns no document or editor data. Browser checks verify periodic refresh preserves navigation and editor state.
+The workspace endpoint uses one metadata-only outer join, includes users without notebooks, and returns no document or editor data. Browser checks verify sidebar refresh preserves navigation and editor state.
+
+## Live sidebar updates
+
+Sidebar changes reach open browsers within about a second: writers publish a queue signal, and each API instance pushes a fresh workspace snapshot to its sockets.
+
+[[backend/workspace_events.py#notify]] runs after create, fork, render-URL backfill, changed publication saves, rename, delete, and enrollment that adds a user or changes a login or avatar. It sends a payload-free message to a per-environment topic with 60-second retention, sent to all deployments in one fixed region. Publish failures are logged and never fail the committed write.
+
+[[backend/workspace_events.py#serve]] accepts same-origin sockets at `/api/workspace/live` and sends a snapshot immediately. Because the socket is public and cookie-free, [[backend/main.py#same_origin]] accepts an Origin equal to APP_URL or to the request's forwarded host, so preview, branch, and custom-domain deployments work; authenticated mutations still require the exact APP_URL. While an instance has sockets, [[backend/workspace_events.py#_relay_loop]] polls the topic with its own process-unique consumer group, so every instance sees every signal; push consumers cannot reach sockets on other instances. Any batch is acknowledged and answered with one [[backend/workspace_events.py#snapshot]] read sent to all local sockets; a lock keeps snapshots ordered. Duplicates or replays only cause a redundant snapshot. Without queue configuration (local development and tests) changes broadcast in-process.
+
+The WebSocket handler installs request headers so OIDC resolves for the relay. The browser applies each snapshot like an HTTP refresh, reconnects with exponential backoff up to 30 seconds (sockets close at the function duration limit), and falls back to the 30-second HTTP refresh only while disconnected.
+
+## Live sidebar tests
+
+Socket tests verify origin handling, a connect snapshot equal to the HTTP endpoint, pushes after rename, create, and delete, end-to-end delivery through the embedded queue server, and that queue publish failures never fail writes.
+
+Origin coverage rejects cross-origin sockets, including a forwarded host that does not match the Origin, and accepts preview-host and request-host origins.
 
 ## Notebook search
 
@@ -253,7 +272,7 @@ The workspace endpoint uses one metadata-only outer join, includes users without
 
 Titles have higher weight than cell text. Quoted phrases, OR, and minus exclusions use websearch_to_tsquery with English stemming. Results contain only notebook metadata, ranked and limited to 100. Drafts, outputs, and chat are excluded. Database-generated vectors update with publication or rename; startup adds the vector and index to existing tables. SQLite development uses title substring matching only.
 
-The browser debounces searches for 250 milliseconds, cancels stale requests, shows loading/failure/empty states, and leaves the selected notebook and active editors intact. Clearing search restores the periodically refreshed full sidebar.
+The browser debounces searches for 250 milliseconds, cancels stale requests, shows loading/failure/empty states, and leaves the selected notebook and active editors intact. Clearing search restores the live full sidebar.
 
 ## About page
 

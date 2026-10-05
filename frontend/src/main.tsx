@@ -35,6 +35,7 @@ type Notebook = {
   render_url?: string | null;
 };
 type WorkspaceUser = { id: number; login: string; avatar_url?: string };
+type Workspace = { users: WorkspaceUser[]; notebooks: Notebook[] };
 type Auth = {
   user: { login: string; user_id: number; avatar_url?: string } | null;
   can_edit: boolean;
@@ -303,22 +304,24 @@ function App() {
     });
   }, []);
 
+  const applyWorkspace = useCallback(({ users, notebooks: list }: Workspace) => {
+    setUsers(users);
+    setNotebooks(list);
+    setLoading(false);
+    setSelected(current => list.some(n => n.id === current) ? current : null);
+    try {
+      sessionStorage.setItem(WORKSPACE_CACHE, JSON.stringify({ saved: Date.now(), notebooks: list }));
+    } catch { /* Rendering must not depend on browser storage. */ }
+  }, []);
   const sidebarRequest = useRef<Promise<void> | null>(null);
   const refreshSidebar = useCallback(() => {
     if (sidebarRequest.current) return sidebarRequest.current;
-    const request = api<{ users: WorkspaceUser[]; notebooks: Notebook[] }>("/workspace")
-      .then(({ users, notebooks: list }) => {
-        setUsers(users);
-        setNotebooks(list);
-        setLoading(false);
-        setSelected(current => list.some(n => n.id === current) ? current : null);
-        try {
-          sessionStorage.setItem(WORKSPACE_CACHE, JSON.stringify({ saved: Date.now(), notebooks: list }));
-        } catch { /* Rendering must not depend on browser storage. */ }
-      }).finally(() => { sidebarRequest.current = null; });
+    const request = api<Workspace>("/workspace")
+      .then(applyWorkspace)
+      .finally(() => { sidebarRequest.current = null; });
     sidebarRequest.current = request;
     return request;
-  }, []);
+  }, [applyWorkspace]);
   const refresh = useCallback(async () => {
     await Promise.all([
       refreshSidebar(),
@@ -329,10 +332,40 @@ function App() {
     refresh()
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-    // Retain the current sidebar on transient failure; the next tick retries.
-    const timer = window.setInterval(() => { void refreshSidebar().catch(() => {}); }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [refresh, refreshSidebar]);
+  }, [refresh]);
+  // @lat: [[architecture#Live sidebar updates]]
+  useEffect(() => {
+    // The server pushes a full workspace snapshot on connect and after every change.
+    let socket: WebSocket | null = null;
+    let attempts = 0;
+    let retry = 0;
+    let stopped = false;
+    const connect = () => {
+      const url = new URL("/api/workspace/live", location.href);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(url);
+      socket.onopen = () => { attempts = 0; };
+      socket.onmessage = event => {
+        try { applyWorkspace(JSON.parse(event.data)); } catch { /* Ignore malformed frames. */ }
+      };
+      socket.onclose = () => {
+        socket = null;
+        // Sockets close at the function duration limit; reconnect with backoff.
+        if (!stopped) retry = window.setTimeout(connect, Math.min(30_000, 1000 * 2 ** attempts++));
+      };
+    };
+    connect();
+    // Retain the current sidebar on transient failure; poll only while the socket is down.
+    const timer = window.setInterval(() => {
+      if (socket?.readyState !== WebSocket.OPEN) void refreshSidebar().catch(() => {});
+    }, 30_000);
+    return () => {
+      stopped = true;
+      window.clearTimeout(retry);
+      window.clearInterval(timer);
+      socket?.close();
+    };
+  }, [applyWorkspace, refreshSidebar]);
   useEffect(() => {
     const url = new URL(location.href);
     url.pathname = about ? "/about" : "/";

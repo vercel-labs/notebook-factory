@@ -9,6 +9,7 @@ from sqlalchemy import select, text, update
 
 from config import APP_URL
 from db import engine, timestamp, users
+from workspace_events import notify
 
 USER_LIMIT = 300
 
@@ -20,6 +21,13 @@ def sandbox_name(login: str, slot: int):
 
 
 async def enroll(profile):
+    account, changed = await _enroll(profile)
+    if changed:
+        await notify()
+    return account
+
+
+async def _enroll(profile):
     subject = profile.get("sub")
     if not isinstance(subject, str) or not subject or len(subject) > 256:
         raise HTTPException(401, "Invalid Vercel identity; sign in again")
@@ -48,7 +56,8 @@ async def enroll(profile):
             await conn.execute(update(users).where(users.c.id == existing["id"]).values(
                 vercel_id=subject, login=login, avatar_url=avatar,
             ))
-            return {**dict(existing), "vercel_id": subject, "login": login, "avatar_url": avatar}
+            changed = (existing["login"], existing["avatar_url"]) != (login, avatar)
+            return {**dict(existing), "vercel_id": subject, "login": login, "avatar_url": avatar}, changed
         if len(rows) >= USER_LIMIT:
             raise HTTPException(403, "Notebook Factory has reached its 300-user signup limit. Existing users can still sign in.")
         slots = {row["id"] for row in rows}
@@ -56,7 +65,7 @@ async def enroll(profile):
         account = dict(id=slot, vercel_id=subject, login=login, avatar_url=avatar,
                        sandbox_name=sandbox_name(login, slot), created_at=timestamp())
         await conn.execute(users.insert().values(**account))
-        return account
+        return account, True
 
 
 async def from_session(profile):

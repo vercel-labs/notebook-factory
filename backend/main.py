@@ -3,10 +3,11 @@ import json
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import anyio
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, or_, select, update
@@ -15,8 +16,10 @@ from vercel.headers import HeadersContext
 import chat
 import editor
 import publication
+import workspace_events
 from auth import require_owner, require_user
 from auth import router as auth_router
+from config import APP_URL
 from db import engine, initialize, notebooks, timestamp, users
 from render import CONTENT_POLICY, new_notebook, render, themed_html, validate
 
@@ -88,24 +91,29 @@ async def search_notebooks(q: str = Query(min_length=1, max_length=200)):
 
 @app.get("/api/workspace")
 async def workspace():
-    # One metadata-only join; never load notebook documents, HTML, or chat history.
-    async with engine.connect() as conn:
-        rows = (await conn.execute(select(
-            users.c.id.label("user_id"), users.c.login, users.c.avatar_url,
-            notebooks.c.id, notebooks.c.title, notebooks.c.updated_at,
-            notebooks.c.revision, notebooks.c.render_url,
-        ).select_from(users.outerjoin(notebooks, notebooks.c.owner_id == users.c.id))
-            .order_by(users.c.login, notebooks.c.updated_at.desc(), notebooks.c.id))).mappings()
-        owners, items = {}, []
-        for row in rows:
-            owner_id = row["user_id"]
-            if owner_id not in owners:
-                owners[owner_id] = {"id": owner_id, "login": row["login"], "avatar_url": row["avatar_url"]}
-            if row["id"] is not None:
-                items.append({"owner_id": owner_id, **{key: row[key] for key in (
-                    "id", "title", "updated_at", "revision", "render_url",
-                )}})
-        return {"users": list(owners.values()), "notebooks": items}
+    return await workspace_events.snapshot()
+
+
+def same_origin(websocket: WebSocket) -> bool:
+    # The socket is public and cookie-free, so it only needs to come from a page served by
+    # this host; that covers previews, branch aliases, and custom domains, not just APP_URL.
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return False
+    if origin == APP_URL:
+        return True
+    host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host") or ""
+    return urlsplit(origin).netloc == host.split(",")[0].strip()
+
+
+@app.websocket("/api/workspace/live")
+async def workspace_live(websocket: WebSocket):
+    if not same_origin(websocket):
+        await websocket.close(code=4403)
+        return
+    # HTTP middleware skips WebSockets; install headers so OIDC resolves for Queues.
+    with HeadersContext(dict(websocket.headers)).use():
+        await workspace_events.serve(websocket)
 
 
 @app.get("/api/notebooks")
@@ -150,6 +158,7 @@ async def create_notebook(body: CreateNotebook, owner=Depends(require_user)):
     )
     async with engine.begin() as conn:
         await conn.execute(notebooks.insert().values(**row))
+    await workspace_events.notify()
     return public(row)
 
 
@@ -177,6 +186,7 @@ async def fork_notebook(id: str, owner=Depends(require_user)):
     )
     async with engine.begin() as conn:
         await conn.execute(notebooks.insert().values(**row))
+    await workspace_events.notify()
     return public(row)
 
 
@@ -220,6 +230,7 @@ async def rendered(id: str):
                 )
                 .values(render_url=url)
             )
+        await workspace_events.notify()
     return HTMLResponse(
         themed_html(html),
         headers={"Content-Security-Policy": "sandbox allow-scripts; " + CONTENT_POLICY},
@@ -441,6 +452,8 @@ async def save_draft(id: str, body: EditorRequest, *, closing=False, require_sav
         )
         if result.rowcount != 1:
             raise HTTPException(409, "Editor changed while saving; retry")
+    if changed:
+        await workspace_events.notify()
     return {
         "saved_at": timestamp(), "published": body.publish, "changed": bool(changed),
         "render_url": values.get("render_url", row["render_url"]),
@@ -472,6 +485,7 @@ async def rename_notebook(id: str, body: RenameNotebook):
         await checked_editor(id, body.token)
         async with engine.begin() as conn:
             await conn.execute(update(notebooks).where(notebooks.c.id == id).values(title=title))
+    await workspace_events.notify()
     return {"id": id, "title": title}
 
 
@@ -481,6 +495,7 @@ async def delete_notebook(id: str, background_tasks: BackgroundTasks):
         row = await get_notebook(id)
         async with engine.begin() as conn:
             await conn.execute(delete(notebooks).where(notebooks.c.id == id))
+        await workspace_events.notify()
         if row["editor"]:
             background_tasks.add_task(stop_closed_editor, json.loads(row["editor"]))
         async with engine.connect() as conn:

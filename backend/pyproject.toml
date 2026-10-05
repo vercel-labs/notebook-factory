@@ -14,7 +14,8 @@ dependencies = [
   "nbconvert>=7.16,<8",
   "vercel-sandbox>=0.6,<0.7",
   "python-dotenv>=1,<2",
-  "vercel>=0.5,<1",
+  "vercel>=0.11,<1",
+  "websockets>=15,<17",
   "ai[vercel]>=0.8,<0.9",
   "pyjwt[crypto]>=2.10,<3",
 ]

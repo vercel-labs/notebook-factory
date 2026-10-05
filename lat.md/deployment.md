@@ -29,6 +29,7 @@ The production alias is public. Unique deployment URLs have Vercel deployment pr
 | `AI_MODEL` | Optional chat model; defaults to gateway:openai/gpt-6-luna |
 | `AI_GATEWAY_API_KEY` | Optional AI Gateway key; deployments use Vercel OIDC by default |
 | `APP_URL` | Canonical app origin; required in Production (`https://notebooks.sh`), leave unset for Preview |
+| `QUEUE_REGION` | Optional Vercel Queues region for live sidebar signals; defaults to `iad1` |
 | `BLOB_READ_WRITE_TOKEN` | Backend upload credential for the public rendered-notebook Blob store |
 | `SESSION_SECRET` | Random signing secret, at least 32 characters in every deployed environment; use a separate value for Preview |
 | `DATABASE_URL` / `POSTGRES_URL` | Postgres connection URL; explicit DATABASE_URL takes precedence over the Supabase integration alias |

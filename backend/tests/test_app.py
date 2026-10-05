@@ -892,6 +892,64 @@ def test_workspace_fetches_all_sidebar_metadata_in_one_join(client):
     assert set(notebook) == {"id", "owner_id", "title", "updated_at", "revision", "render_url"}
 
 
+# @lat: [[architecture#Live sidebar tests]]
+def test_workspace_socket_pushes_snapshots_after_changes(client, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+    notebook_id = create(client)
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/workspace/live", headers={"origin": "https://evil.example"}):
+            pass
+    with pytest.raises(WebSocketDisconnect):
+        # A spoofed host must still match the Origin the browser sent.
+        with client.websocket_connect("/api/workspace/live", headers={
+            "origin": "https://evil.example", "x-forwarded-host": "preview.vercel.app",
+        }):
+            pass
+    # Preview and branch URLs differ from APP_URL but are same-origin with the request host.
+    for headers in ({"origin": "https://preview.vercel.app", "x-forwarded-host": "preview.vercel.app"},
+                    {"origin": "http://testserver"}):
+        with client.websocket_connect("/api/workspace/live", headers=headers) as socket:
+            assert socket.receive_json() == client.get("/api/workspace").json()
+    with client.websocket_connect("/api/workspace/live", headers={"origin": "http://localhost:5173"}) as socket:
+        assert socket.receive_json() == client.get("/api/workspace").json()
+        current = {"name": "live", "token": "secret", "url": "https://example.test"}
+        monkeypatch.setattr(main.editor, "start", AsyncMock(return_value=current))
+        # Opening an editor does not change sidebar metadata, so nothing is pushed for it.
+        assert client.post(f"/api/notebooks/{notebook_id}/editor", json={}).status_code == 200
+        response = client.post(f"/api/notebooks/{notebook_id}/rename",
+                               json={"token": "secret", "title": "Renamed live"})
+        assert response.status_code == 200
+        renamed = socket.receive_json()
+        assert next(n for n in renamed["notebooks"] if n["id"] == notebook_id)["title"] == "Renamed live"
+        created = client.post("/api/notebooks", json={"title": "Second live"}).json()
+        assert any(n["id"] == created["id"] for n in socket.receive_json()["notebooks"])
+        assert client.post(f"/api/notebooks/{created['id']}/delete").status_code == 200
+        assert all(n["id"] != created["id"] for n in socket.receive_json()["notebooks"])
+
+
+def test_queue_relay_delivers_changes_to_sockets(client, monkeypatch):
+    from vercel.queue.devserver import embedded_queue_dev_server
+    with embedded_queue_dev_server() as server:
+        monkeypatch.setenv("VERCEL_QUEUE_BASE_URL", server.base_url)
+        monkeypatch.setenv("VERCEL_QUEUE_TOKEN", "vc-dev-token")
+        monkeypatch.setattr(main.workspace_events, "IDLE_POLL_SECONDS", 0.05)
+        authenticate(client)
+        with client.websocket_connect("/api/workspace/live") as socket:
+            socket.receive_json()
+            created = client.post("/api/notebooks", json={"title": "Via queue"}).json()
+            assert any(n["id"] == created["id"] for n in socket.receive_json()["notebooks"])
+
+
+def test_queue_publish_failure_does_not_fail_writes(client, monkeypatch):
+    class FailingClient:
+        async def send(self, *args, **kwargs):
+            raise RuntimeError("queue unavailable")
+    monkeypatch.setattr(main.workspace_events, "queue_enabled", lambda: True)
+    monkeypatch.setattr(main.workspace_events, "queue_client", FailingClient)
+    authenticate(client)
+    assert client.post("/api/notebooks", json={"title": "Still saved"}).status_code == 201
+
+
 # @lat: [[chat#Initial notebook prompt tests]]
 @pytest.mark.parametrize("prompt", ["  Plot a sine wave.\n\nExplain the axes.  ", "   "])
 def test_creation_prompt_is_notebook_introduction(client, prompt):
