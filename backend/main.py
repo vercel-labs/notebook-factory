@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, or_, select, update
 from vercel.headers import HeadersContext
+from vercel.oidc.token import get_vercel_oidc_token_from_context
 
 import chat
 import editor
@@ -42,6 +43,13 @@ app.include_router(auth_router)
 @app.middleware("http")
 async def headers(request, call_next):
     with HeadersContext(dict(request.headers)).use():
+        # hack: websocket requests come without an oidc token. Store each HTTP request's token
+        # in the SDK's process-wide cache so the queue relay started by a socket can use it.
+        if workspace_events.queue_enabled() and "x-vercel-oidc-token" in request.headers:
+            try:
+                get_vercel_oidc_token_from_context()
+            except Exception:
+                log.warning("Could not cache the OIDC token", exc_info=True)
         response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -111,7 +119,8 @@ async def workspace_live(websocket: WebSocket):
     if not same_origin(websocket):
         await websocket.close(code=4403)
         return
-    # HTTP middleware skips WebSockets; install headers so OIDC resolves for Queues.
+    # HTTP middleware skips WebSockets. The upgrade carries no OIDC token, so the relay relies on
+    # the token the HTTP middleware cached (see the hack in headers()).
     with HeadersContext(dict(websocket.headers)).use():
         await workspace_events.serve(websocket)
 

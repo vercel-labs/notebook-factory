@@ -940,6 +940,27 @@ def test_queue_relay_delivers_changes_to_sockets(client, monkeypatch):
             assert any(n["id"] == created["id"] for n in socket.receive_json()["notebooks"])
 
 
+def test_http_requests_cache_oidc_token_for_socket_relay(client, monkeypatch):
+    # Deployed WebSocket upgrades carry no OIDC token; the relay must reuse one from HTTP.
+    import time
+
+    import jwt
+    from vercel.oidc import token as oidc
+
+    monkeypatch.delenv("VERCEL_OIDC_TOKEN", raising=False)
+    monkeypatch.setattr(main.workspace_events, "queue_enabled", lambda: True)
+    oidc._clear_cached_oidc_token()
+    try:
+        with pytest.raises(oidc.VercelOidcTokenError):
+            oidc.get_vercel_oidc_token_from_context()
+        token = jwt.encode({"exp": int(time.time()) + 3600}, "k" * 32, algorithm="HS256")
+        assert client.get("/api/workspace", headers={"x-vercel-oidc-token": token}).status_code == 200
+        # Outside any request context, as in the relay task, the cached token resolves.
+        assert client.portal.call(oidc.get_vercel_oidc_token_async) == token
+    finally:
+        oidc._clear_cached_oidc_token()
+
+
 def test_queue_publish_failure_does_not_fail_writes(client, monkeypatch):
     class FailingClient:
         async def send(self, *args, **kwargs):

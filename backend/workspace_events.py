@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
-from vercel.oidc.token import get_vercel_oidc_token_from_context
 from vercel.queue import ALL_DEPLOYMENTS, QueueClient
 
 from config import PRODUCTION
@@ -104,12 +103,6 @@ async def _relay_loop():
 async def serve(websocket: WebSocket):
     global _relay
     await websocket.accept()
-    if queue_enabled():
-        try:
-            # Prime the process-wide OIDC cache from this connection's headers for the relay.
-            get_vercel_oidc_token_from_context()
-        except Exception:
-            log.warning("No OIDC token for workspace relay", exc_info=True)
     sockets.add(websocket)
     try:
         await _send([websocket])

@@ -258,11 +258,13 @@ Sidebar changes reach open browsers within about a second: writers publish a que
 
 [[backend/workspace_events.py#serve]] accepts same-origin sockets at `/api/workspace/live` and sends a snapshot immediately. Because the socket is public and cookie-free, [[backend/main.py#same_origin]] accepts an Origin equal to APP_URL or to the request's forwarded host, so preview, branch, and custom-domain deployments work; authenticated mutations still require the exact APP_URL. While an instance has sockets, [[backend/workspace_events.py#_relay_loop]] polls the topic with its own process-unique consumer group, so every instance sees every signal; push consumers cannot reach sockets on other instances. Any batch is acknowledged and answered with one [[backend/workspace_events.py#snapshot]] read sent to all local sockets; a lock keeps snapshots ordered. Duplicates or replays only cause a redundant snapshot. Without queue configuration (local development and tests) changes broadcast in-process.
 
-The WebSocket handler installs request headers so OIDC resolves for the relay. The browser applies each snapshot like an HTTP refresh, reconnects with exponential backoff up to 30 seconds (sockets close at the function duration limit), and falls back to the 30-second HTTP refresh only while disconnected.
+Deployed WebSocket upgrades arrive without the `x-vercel-oidc-token` header, so as a hack [[backend/main.py#headers]] caches each HTTP request's token in the Vercel SDK's process-wide cache; the relay task authenticates with that cached token. The browser applies each snapshot like an HTTP refresh, reconnects with exponential backoff up to 30 seconds (sockets close at the function duration limit), and falls back to the 30-second HTTP refresh only while disconnected.
 
 ## Live sidebar tests
 
 Socket tests verify origin handling, a connect snapshot equal to the HTTP endpoint, pushes after rename, create, and delete, end-to-end delivery through the embedded queue server, and that queue publish failures never fail writes.
+
+A token test proves an HTTP request's OIDC token later resolves outside any request, as the socket-started relay needs.
 
 Origin coverage rejects cross-origin sockets, including a forwarded host that does not match the Origin, and accepts preview-host and request-host origins.
 
