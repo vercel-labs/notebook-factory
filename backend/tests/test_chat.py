@@ -320,6 +320,23 @@ async def test_failed_model_step_retries_and_resets_partial_output(monkeypatch, 
     ]
 
 
+def test_tool_schemas_come_from_decorated_stubs():
+    schemas = {tool.name: tool.tool.spec.params for tool in agent.TOOLS + agent.VIEW_TOOLS}
+    assert {name: schema.get("required", []) for name, schema in schemas.items()} == {
+        "rename_notebook": ["title"],
+        "scroll_notebook": ["direction"],
+        "read_notebook": [],
+        "replace_cell": ["cell_id", "expected_source", "source"],
+        "insert_cell": ["after_id", "cell_type", "source"],
+        "run_cell": ["cell_id", "expected_source"],
+        "request_editing": ["reason"],
+    }
+    title = schemas["rename_notebook"]["properties"]["title"]
+    assert (title["minLength"], title["maxLength"]) == (1, 120)
+    assert schemas["insert_cell"]["properties"]["cell_type"]["enum"] == ["code", "markdown"]
+    assert agent.read_notebook.tool.spec.description.startswith("Read the currently open notebook")
+
+
 # @lat: [[chat#Durable turn tests]]
 async def test_turn_that_never_starts_fails_instead_of_hanging(monkeypatch, nb):
     from unittest.mock import AsyncMock, Mock
