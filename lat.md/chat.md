@@ -6,11 +6,35 @@ Chat is available while viewing or editing a notebook. Viewing answers use publi
 
 ## Agent and streaming
 
-[[backend/chat.py]] streams through Vercel AI Gateway with five browser-executed document tools and an authenticated notebook rename tool. The model never receives Sandbox credentials or a general server-side execution tool.
+[[backend/chat.py]] streams through Vercel AI Gateway with five browser-executed document tools and an authenticated notebook rename tool, as a [[chat#Durable turns|durable turn]]. The model gets no Sandbox credentials or server-side execution tool.
 
 The default model is GPT-6 Luna, configurable with AI_MODEL. The chat header displays the model ID returned by the server, using the same configuration as inference. Medium reasoning effort requests reasoning; provider-visible reasoning is optional, and the UI streams it in an expandable Thoughts section, open while streaming and collapsed afterward. A spinner accompanies waiting and tool-execution status. Deployment uses Vercel OIDC; local development can load VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY. Gateway access and credits are required. A free-tier model rejection displays an explicit instruction to add paid Gateway credits. Notebook sources and text outputs are sent to the model when it reads the document.
 
-The Python 0.8 UI adapter dispatches completed client tool inputs through an empty ToolCallResult event. Continuations preserve the existing assistant UI message ID to prevent duplicated tool history. Empty argument strings are normalized to JSON objects. Requests have a 1 MB history limit and 160-message limit; the browser bounds automatic work to 24 tool calls per user message. The prompt makes that budget explicit and defaults open-ended demonstrations to one focused example with a few cells and one result; multiple examples require an explicit request. Final explanations, conclusions, and caveats belong in a Markdown cell after the relevant notebook work, updating an existing conclusion when appropriate. The assistant reserves tool budget to write and reveal those remarks, then confirms briefly in chat. Explicit chat-only requests take precedence; tool failures are reported without claiming the remarks were saved.
+The Python 0.8 UI adapter dispatches completed client tool inputs through an empty ToolCallResult event, which the turn writes after each model step that requests tools. Continuations preserve the existing assistant UI message ID to prevent duplicated tool history. Empty argument strings are normalized to JSON objects. Requests have a 1 MB history limit and 160-message limit; the browser bounds automatic work to 24 tool calls per user message. The prompt makes that budget explicit and defaults open-ended demonstrations to one focused example with a few cells and one result; multiple examples require an explicit request. Final explanations, conclusions, and caveats belong in a Markdown cell after the relevant notebook work, updating an existing conclusion when appropriate. The assistant reserves tool budget to write and reveal those remarks, then confirms briefly in chat. Explicit chat-only requests take precedence; tool failures are reported without claiming the remarks were saved.
+
+## Durable turns
+
+Each user message starts one Vercel Workflows run, [[backend/agent.py#run_turn]], so a reply survives dropped connections, reloads, function timeouts, and failed model calls.
+
+[[backend/agent.py#llm_step]] is a retried, cancellable step that writes AI events to the run's stream as they arrive; [[backend/chat.py#relay]] tails that stream into the same AI SDK UI response, so tokens, reasoning, and tool arguments still stream live. A retry after partial output emits a reset so the browser drops it. Gateway free-tier rejections fail immediately with the paid-credits message.
+
+Tools still run in the browser. After a model step requests tools, the run parks on one hook per notebook, [[backend/agent.py#hook_token]], which also identifies the active run without a database column. The browser's automatic continuation resumes that hook with results for exactly the parked call IDs, and the response tails the run from just after the park. A continuation without a matching parked turn runs as a new turn from the browser's history. The resume also carries editing mode, so request_editing consent still switches tools mid-turn. A parked turn ends after [[backend/agent.py#PARK_SECONDS]].
+
+A new user message stops any unfinished turn first. When a reply ends in the browser for any reason, it calls the stop endpoint so the server turn does not linger. Stop reply therefore also cancels an in-flight model step.
+
+After history loads, [[frontend/src/Chat.tsx#Chat]] calls resumeStream. [[backend/main.py#resume_notebook_chat]] replays the active run from its start, including recorded tool outputs, and stops where the turn currently waits. The replay keeps the turn's assistant message ID, so it replaces a partially saved copy instead of duplicating it. Replayed tool calls are not executed. The endpoint uses [[backend/auth.py#require_owner_read]] because browsers send same-origin GETs without an Origin header.
+
+Workflow events, hooks, and stream chunks live in Vercel Workflows storage; Postgres chat history is unchanged. Locally, plain uvicorn uses the in-process local workflow world, and [[backend/chat.py#local_workflow_queue]] hosts its embedded queue in a dedicated task for the app lifetime.
+
+## Durable turn tests
+
+Tests run turns on the real local workflow world with a scripted model, covering live argument streaming and tool dispatch.
+
+They also cover resuming the parked run with tool results, superseding an unfinished turn, replay up to the current wait, retry reset after partial output, and immediate free-tier errors.
+
+## Durable turn API tests
+
+An API test drives a turn through FastAPI: the POST stream dispatches a tool, a GET without Origin replays the parked turn, and stop releases it so reconnecting returns 204.
 
 ## Live document tools
 
@@ -80,7 +104,7 @@ History loading disables only chat controls, not sidebar navigation. Mounted con
 
 [[backend/chat.py#history_messages]] marks unfinished tools as interrupted when storing them. Rehydration does not submit model requests or replay tools; the next user message begins a fresh turn. The prompt treats previous results as historical because notebook edits may have been discarded and kernel memory may have changed.
 
-Navigation does not interrupt pending history saves. Save failures remain visible with a retry action; conflicts offer reloading the saved chat instead of overwriting it. A completed or stopped agent turn also triggers a live notebook export to the database. Completed turns are durable; forcibly closing the browser mid-reply can lose the unfinished turn. Authentication permissions are not cached with conversations.
+Navigation does not interrupt pending history saves. Save failures remain visible with a retry action; conflicts offer reloading the saved chat instead of overwriting it. A completed or stopped agent turn also triggers a live notebook export to the database. An unfinished turn keeps running server-side when the browser closes or reloads; reopening replays it from the workflow stream (see [[chat#Durable turns]]). Authentication permissions are not cached with conversations.
 
 ## Persistent history tests
 

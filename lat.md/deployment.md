@@ -75,7 +75,7 @@ uv run uvicorn main:app --reload --port 8000
 npm run dev --prefix frontend
 ```
 
-Local SQLite needs no service provisioning. Live editing still requires Sandbox credentials. The Python package supports 3.12+, while the checked-in version file selects 3.13. Vite requires a compatible Node runtime; setup used Node 24.
+Local SQLite needs no service provisioning. Durable chat turns run in-process on the local workflow world, stored in the ignored `backend/.workflow-data/` unless `WORKFLOW_LOCAL_DATA_DIR` is set; see [[chat#Durable turns]]. Live editing still requires Sandbox credentials. The Python package supports 3.12+, while the checked-in version file selects 3.13. Vite requires a compatible Node runtime; setup used Node 24.
 
 For the Vercel local gateway, use the verified published CLI and match OAuth to port 3000:
 

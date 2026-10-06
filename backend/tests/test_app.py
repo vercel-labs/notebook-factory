@@ -43,6 +43,7 @@ def create(client):
         ("/api/notebooks/missing/delete", {}),
         ("/api/notebooks/missing/rename", {"token": "x", "title": "New title"}),
         ("/api/notebooks/missing/chat", {"token": "x", "messages": []}),
+        ("/api/notebooks/missing/chat/stop", {}),
     ],
 )
 def test_mutations_require_owner_and_origin(client, path, body):
@@ -705,7 +706,7 @@ def test_view_chat_and_history_do_not_require_or_start_editor(client, monkeypatc
     id = create(client)
     modes = []
 
-    async def stream(messages, message_id=None, *, editing):
+    async def stream(notebook_id, messages, *, editing):
         modes.append(editing)
         yield 'data: [DONE]\n\n'
 
@@ -721,9 +722,61 @@ def test_view_chat_and_history_do_not_require_or_start_editor(client, monkeypatc
     assert client.put(f"/api/notebooks/{id}/chat-history", json={"messages": [], "revision": 0}).status_code == 409
     assert {tool.name for tool in main.chat.VIEW_TOOLS} == {"read_notebook", "request_editing"}
     start.assert_not_awaited()
+    # Reconnecting is a same-origin GET without an Origin header; nothing is running.
+    origin = client.headers.pop("origin", None)
+    assert client.get(f"/api/notebooks/{id}/chat/stream").status_code == 204
+    if origin:
+        client.headers["origin"] = origin
     client.cookies.clear()
     assert client.post(f"/api/notebooks/{id}/chat", json={"messages": messages}).status_code == 401
+    assert client.get(f"/api/notebooks/{id}/chat/stream").status_code == 401
     assert client.post(f"/api/notebooks/{id}/chat-history", json={}).status_code == 200
+
+
+# @lat: [[chat#Durable turn API tests]]
+def test_chat_turn_survives_reconnect_and_stops(client, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    import ai
+
+    id = create(client)
+    message = ai.types.messages.Message(
+        role="assistant",
+        parts=[
+            ai.types.messages.TextPart(text="Let me look."),
+            ai.types.messages.ToolCallPart(tool_call_id="c1", tool_name="read_notebook", tool_args="{}"),
+        ],
+    )
+
+    @asynccontextmanager
+    async def stream(*args, **kwargs):
+        async def events():
+            yield ai.events.StreamStart(message=message)
+            yield ai.events.TextStart(block_id="t", message=message)
+            yield ai.events.TextDelta(block_id="t", chunk="Let me look.", message=message)
+            yield ai.events.TextEnd(block_id="t", message=message)
+            yield ai.events.StreamEnd(message=message, finish_reason="tool_call")
+
+        yield events()
+
+    monkeypatch.setattr(ai, "stream", stream)
+    messages = [{"id": "u1", "role": "user", "parts": [{"type": "text", "text": "Read it"}]}]
+    first = client.post(f"/api/notebooks/{id}/chat", json={"messages": messages})
+    assert first.status_code == 200
+    assert '"type": "tool-input-available"' in first.text
+    assert first.text.endswith("data: [DONE]\n\n")
+
+    # A reload reattaches without an Origin header and replays the parked turn.
+    origin = client.headers.pop("origin")
+    replay = client.get(f"/api/notebooks/{id}/chat/stream")
+    client.headers["origin"] = origin
+    assert replay.status_code == 200
+    assert "Let me look." in replay.text and '"toolCallId": "c1"' in replay.text
+
+    assert client.post(f"/api/notebooks/{id}/chat/stop").status_code == 204
+    client.headers.pop("origin")
+    assert client.get(f"/api/notebooks/{id}/chat/stream").status_code == 204
+    client.headers["origin"] = origin
 
 
 # @lat: [[editing#Automatic recovery tests]]

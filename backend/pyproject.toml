@@ -19,6 +19,10 @@ dependencies = [
   "ai[vercel]>=0.8,<0.9",
   "pyjwt[crypto]>=2.10,<3",
 ]
+# Durable chat turns; Vercel builds this registry into a queue-triggered workflow function.
+[[tool.vercel.workflows]]
+entrypoint = "agent:workflow"
+
 [dependency-groups]
 dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12"]
 [tool.pytest.ini_options]

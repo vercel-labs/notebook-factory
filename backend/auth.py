@@ -47,7 +47,18 @@ async def require_user(request: Request):
 
 
 async def require_owner(request: Request):
-    current = await require_user(request)
+    return await _owner(request, await require_user(request))
+
+
+async def require_owner_read(request: Request):
+    """Owner check for read-only GETs, which browsers send without an Origin header."""
+    current = user(request)
+    if not current:
+        raise HTTPException(401, "Sign in with Vercel first")
+    return await _owner(request, await from_session(current))
+
+
+async def _owner(request: Request, current):
     id = request.path_params.get("id")
     if id:
         async with engine.connect() as conn:

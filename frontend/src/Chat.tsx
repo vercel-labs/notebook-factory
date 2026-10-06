@@ -75,6 +75,8 @@ export function Chat({
       new DefaultChatTransport({
         api: `/api/notebooks/${notebookId}/chat`,
         body: () => ({ token: currentEditor.current?.token ?? null }),
+        // Durable turns keep running server-side; a remount reattaches to the active one.
+        prepareReconnectToStreamRequest: () => ({ api: `/api/notebooks/${notebookId}/chat/stream` }),
       }),
     [notebookId],
   );
@@ -87,6 +89,7 @@ export function Chat({
     stop,
     setMessages,
     clearError,
+    resumeStream,
   } = useChat({
     transport,
     sendAutomaticallyWhen: (options) =>
@@ -240,6 +243,14 @@ export function Chat({
   });
   const busy = status === "submitted" || status === "streaming" || pending > 0;
   const history = useNotebookHistory(notebookId, null, messages, setMessages, busy, readOnly);
+  const resumed = useRef(false);
+  useEffect(() => {
+    // After a reload or remount, replay a turn still running on the server. Replayed tool calls
+    // are not executed because no user turn is active in this session.
+    if (readOnly || resumed.current || !history.loaded || history.error) return;
+    resumed.current = true;
+    void resumeStream();
+  }, [readOnly, history.loaded, history.error, resumeStream]);
   const initialPromptSent = useRef(false);
   useEffect(() => {
     if (!initialPrompt || initialPromptSent.current || !editor || editorStarting || readOnly || busy || disabled || !history.loaded || history.blocking || history.error) return;
@@ -254,9 +265,14 @@ export function Chat({
   }, [initialPrompt, editor, editorStarting, readOnly, busy, disabled, history.loaded, history.blocking, history.error, notebookId, onInitialPromptSent, sendMessage]);
   const wasBusy = useRef(false);
   useEffect(() => {
-    if (wasBusy.current && !busy) onTurnFinished(notebookId);
+    if (wasBusy.current && !busy) {
+      onTurnFinished(notebookId);
+      // A reply that ended here (finished, stopped, halted, or out of tool budget) will not send
+      // more tool results, so release the server turn instead of leaving it parked.
+      if (!readOnly) void fetch(`/api/notebooks/${notebookId}/chat/stop`, { method: "POST" }).catch(() => {});
+    }
     wasBusy.current = busy;
-  }, [busy, notebookId, onTurnFinished]);
+  }, [busy, notebookId, onTurnFinished, readOnly]);
   useEffect(() => {
     onBusy(notebookId, busy || history.persistenceBlocking, busy && !consent);
   }, [busy, consent, history.persistenceBlocking, notebookId, onBusy]);
