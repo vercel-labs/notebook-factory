@@ -26,9 +26,23 @@ Tools still run in the browser. After a model step requests tools, the run parks
 
 A turn counts as started once its run holds the hook or has already finished. If neither happens within 30 seconds, the run is terminated and the reply ends with an error instead of waiting forever.
 
-A new user message stops any unfinished turn first. When a reply ends in the browser for any reason, it calls the stop endpoint so the server turn does not linger. Stop reply therefore also cancels an in-flight model step.
+A new user message stops any unfinished turn first. Stop reply calls the stop endpoint directly, which also cancels an in-flight model step. Otherwise the browser releases a turn only when it stays parked on this tab's tools without a continuation (halted or out of tool budget) after a short grace period. Finished turns need no stop, and a dropped stream reconnects instead.
 
-After history loads, [[frontend/src/Chat.tsx#Chat]] calls resumeStream. [[backend/main.py#resume_notebook_chat]] replays the active run from its start, including recorded tool outputs, and stops where the turn currently waits. The replay keeps the turn's assistant message ID, so it replaces a partially saved copy instead of duplicating it. Replayed tool calls are not executed. The endpoint uses [[backend/auth.py#require_owner_read]] because browsers send same-origin GETs without an Origin header.
+Every relayed response that reaches a [[backend/agent.py#Lifecycle]] event ends with a transient `data-turn` part from [[backend/chat.py#turn_marker]]: `parked` (with the awaited call IDs and tool mode), `done`, `stopped`, or `error`. A response without one was cut off.
+
+[[backend/main.py#resume_notebook_chat]] replays the active run from its start, including recorded tool outputs, and stops where the turn currently waits. The replay keeps the turn's assistant message ID, so it replaces a partially saved copy instead of duplicating it. The endpoint uses [[backend/auth.py#require_owner_read]] because browsers send same-origin GETs without an Origin header.
+
+## Reattaching after reload
+
+The server decides whether a turn is live; the browser never trusts a stored streaming flag. A reload or dropped stream reattaches to the live turn and takes over its parked browser tools.
+
+[[backend/main.py#notebook_chat_state]] returns [[backend/chat.py#turn_state]]: inactive, a model step in progress, or parked with the awaited call IDs and editing mode. [[backend/chat.py#live_run]] treats a hook whose run already reached a terminal status as stale, and replay uses the same check, answering 204.
+
+After history loads, [[frontend/src/Chat.tsx#Chat]] checks that state while showing the composer disabled. A stale or absent turn leaves chat idle and marks unfinished tool cards interrupted. A live turn shows "Reconnecting to the assistant…" and Stop reply, then replays the turn. Replayed calls are not executed as they stream. When the replay ends parked, the tab adopts the turn: it restores the tool budget from completed calls and runs only the parked calls without outputs. Safe calls (reads, scrolling, renaming, and editing consent) run again. Calls in [[frontend/src/Chat.tsx#UNSAFE_AFTER_RELOAD]] report an interruption instead, so the model rereads the notebook rather than running a cell twice. Tools of an editing-mode turn wait briefly for the restored editor ([[editing#Editing mode across reloads]]). Their results resume the parked hook through the normal continuation.
+
+A live response that ends without a marker triggers the same check with backoff, up to four attempts, before showing a reload hint. Calls this page already dispatched are not run again; their recorded results are reapplied to the replayed message. [[frontend/src/Chat.tsx#replayableFetch]] reports stream interruptions as plain errors, because the AI SDK would otherwise append the from-start replay to the interrupted partial message.
+
+A Web Lock per notebook lets one tab of a browser execute a turn's tools; other tabs only watch the replay. Tabs in different browsers are not coordinated.
 
 Workflow events, hooks, and stream chunks live in Vercel Workflows storage; Postgres chat history is unchanged. Locally, plain uvicorn uses the in-process local workflow world, and [[backend/chat.py#local_workflow_queue]] hosts its embedded queue in a dedicated task for the app lifetime.
 
@@ -38,9 +52,19 @@ Tests run turns on the real local workflow world with a scripted model, covering
 
 They also cover resuming the parked run with tool results and a mid-turn switch to editing tools, stopping an in-flight model step, failing a turn that never starts, superseding an unfinished turn, replay up to the current wait, retry reset after partial output, and immediate free-tier errors.
 
+Turn-state checks report no turn, a model step, and parked calls with their tool mode. Responses end with `done`, `parked`, `stopped`, or `error` markers, including replays.
+
 ## Durable turn API tests
 
-An API test drives a turn through FastAPI: the POST stream dispatches a tool, a GET without Origin replays the parked turn, and stop releases it so reconnecting returns 204.
+An API test drives a turn through FastAPI: the POST stream dispatches a tool and ends parked, and a GET without Origin replays it. After stop, reconnecting returns 204.
+
+The owner-only state endpoint reports the parked calls, then inactive after stop, and rejects anonymous requests.
+
+## Reload state tests
+
+A browser regression with a mock API reloads the app around editing sessions and durable turns, checking that UI state is restored without getting stuck.
+
+It covers no replay for an absent turn, editing mode restored on reload and cleared by Quit editor, and checkpointing the prompt but not the in-flight reply. It also covers adopting a parked turn (earlier rounds skipped, safe reads repeated, unsafe cell runs interrupted) and recovering a dropped stream without duplicated output. Further cases: no double run of a tool dispatched before the drop, no stop requests for finished or dropped turns, and a stale turn leaving chat idle. Run [frontend/tests/reload_state.cjs](../frontend/tests/reload_state.cjs) after the frontend build with Playwright installed, optionally setting PLAYWRIGHT_MODULE.
 
 ## Live document tools
 
@@ -110,7 +134,9 @@ History loading disables only chat controls, not sidebar navigation. Mounted con
 
 [[backend/chat.py#history_messages]] marks unfinished tools as interrupted when storing them. Rehydration does not submit model requests or replay tools; the next user message begins a fresh turn. The prompt treats previous results as historical because notebook edits may have been discarded and kernel memory may have changed.
 
-Navigation does not interrupt pending history saves. Save failures remain visible with a retry action; conflicts offer reloading the saved chat instead of overwriting it. A completed or stopped agent turn also triggers a live notebook export to the database. An unfinished turn keeps running server-side when the browser closes or reloads; reopening replays it from the workflow stream (see [[chat#Durable turns]]). Authentication permissions are not cached with conversations.
+Navigation does not interrupt pending history saves. Save failures remain visible with a retry action; conflicts offer reloading the saved chat instead of overwriting it. A completed or stopped agent turn also triggers a live notebook export to the database. An unfinished turn keeps running server-side when the browser closes or reloads; reopening replays it from the workflow stream and takes over its parked tools (see [[chat#Reattaching after reload]]). Authentication permissions are not cached with conversations.
+
+While a reply runs, the hook checkpoints messages up to the latest user prompt so a reload keeps the prompt. The in-flight assistant message is saved when the turn ends, and a checkpoint never shortens saved history.
 
 ## Persistent history tests
 

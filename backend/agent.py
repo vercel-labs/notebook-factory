@@ -137,8 +137,10 @@ class TurnSignal(pydantic.BaseModel, vercel.workflow.BaseHook):
 
 class Lifecycle(pydantic.BaseModel):
     kind: Literal["lifecycle"] = "lifecycle"
-    type: Literal["parked", "done", "error"]
+    type: Literal["parked", "done", "stopped", "error"]
+    # Parked: the calls awaiting browser results, and the tool mode they were requested in.
     tool_call_ids: list[str] = []
+    editing: bool = False
     error: str | None = None
 
 
@@ -222,7 +224,11 @@ class NotebookAgent(ai.Agent):
             yield ai.events.ToolCallResult(message=message, results=[])
             await write_event(
                 self.writer,
-                Lifecycle(type="parked", tool_call_ids=[call.tool_call_id for call in calls]),
+                Lifecycle(
+                    type="parked",
+                    tool_call_ids=[call.tool_call_id for call in calls],
+                    editing=self.editing,
+                ),
             )
             try:
                 signal = await asyncio.wait_for(self.inbox.get(), self.park_seconds)
@@ -254,10 +260,13 @@ async def run_turn(turn: TurnInput) -> None:
     signals = TurnSignal.wait(token=hook_token(turn.notebook_id))
     agent = NotebookAgent(turn, writer)
     work = asyncio.create_task(agent.respond(turn))
+    stopped = False
 
     async def listen() -> None:
+        nonlocal stopped
         async for signal in signals:
             if signal.kind == "stop":
+                stopped = True
                 work.cancel()
                 return
             agent.inbox.put_nowait(signal)
@@ -274,6 +283,9 @@ async def run_turn(turn: TurnInput) -> None:
     # immediately start the next turn.
     signals.dispose()
     listener.cancel()
-    end = Lifecycle(type="error", error=agent.error) if agent.error else Lifecycle(type="done")
+    if agent.error:
+        end = Lifecycle(type="error", error=agent.error)
+    else:
+        end = Lifecycle(type="stopped" if stopped else "done")
     await write_event(writer, end)
     await close_stream(writer)

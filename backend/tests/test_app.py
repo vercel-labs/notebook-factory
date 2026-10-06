@@ -766,17 +766,30 @@ def test_chat_turn_survives_reconnect_and_stops(client, monkeypatch):
     assert '"type": "tool-input-available"' in first.text
     assert first.text.endswith("data: [DONE]\n\n")
 
-    # A reload reattaches without an Origin header and replays the parked turn.
+    assert '"type": "data-turn"' in first.text and '"toolCallIds": ["c1"]' in first.text
+
+    # A reload checks the authoritative state, then reattaches without an Origin header and
+    # replays the parked turn, ending with the calls the browser still owes.
     origin = client.headers.pop("origin")
+    assert client.get(f"/api/notebooks/{id}/chat/state").json() == {
+        "active": True,
+        "phase": "awaiting_tools",
+        "tool_call_ids": ["c1"],
+        "editing": False,
+    }
     replay = client.get(f"/api/notebooks/{id}/chat/stream")
     client.headers["origin"] = origin
     assert replay.status_code == 200
     assert "Let me look." in replay.text and '"toolCallId": "c1"' in replay.text
+    assert '"state": "parked"' in replay.text
 
     assert client.post(f"/api/notebooks/{id}/chat/stop").status_code == 204
     client.headers.pop("origin")
     assert client.get(f"/api/notebooks/{id}/chat/stream").status_code == 204
+    assert client.get(f"/api/notebooks/{id}/chat/state").json() == {"active": False}
     client.headers["origin"] = origin
+    client.cookies.clear()
+    assert client.get(f"/api/notebooks/{id}/chat/state").status_code == 401
 
 
 # @lat: [[editing#Automatic recovery tests]]

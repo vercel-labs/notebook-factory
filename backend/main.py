@@ -581,6 +581,13 @@ async def resume_notebook_chat(id: str):
     return StreamingResponse(replay, headers=chat.ai.ui.ai_sdk.UI_MESSAGE_STREAM_HEADERS)
 
 
+@app.get("/api/notebooks/{id}/chat/state", dependencies=[Depends(require_owner_read)])
+async def notebook_chat_state(id: str):
+    """Authoritative turn state, so a reloaded page only shows streaming for a live turn."""
+    await get_notebook(id)
+    return await chat.turn_state(id)
+
+
 @app.post("/api/notebooks/{id}/chat/stop", dependencies=[Depends(require_owner)])
 async def stop_notebook_chat(id: str):
     await chat.stop_turn(id)

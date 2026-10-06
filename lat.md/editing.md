@@ -77,6 +77,14 @@ Background shutdown errors are logged; the Sandbox execution limit bounds its re
 
 Notebook documents and their saved outputs persist in Postgres. Uploaded side files and extra installed dependencies persist on the shared workspace drive; kernel memory does not. Navigation preserves edits, packages, and side files. Closing the browser stops app autosaves/heartbeats, so changes since the last successful durable save can be lost. A before-unload warning is advisory, not persistence.
 
+## Editing mode across reloads
+
+A reload reopens the editor a tab was using, so editing mode stays on. The server stays authoritative: it reuses the live session or recovers an expired one from the durable draft.
+
+When an editor becomes ready, [[frontend/src/main.tsx#rememberEditing]] records its notebook under [[frontend/src/main.tsx#EDITING_KEY]] in sessionStorage. The flag survives reloads but not new tabs, so other tabs never start a Sandbox. Quit editor, deletion, and a 409 editor-status response (session replaced elsewhere) clear it.
+
+After a reload, an owner viewing a flagged notebook calls the normal open path once. [[backend/main.py#provision_editor]] returns the reachable same-generation session without a new Sandbox, or provisions one with the usual setup progress. A held editor lease is retried a few times with backoff; any other failure clears the flag and shows the setup error. Other flagged notebooks restore when visited. Edits made after the last autosave may still be lost, because the before-unload warning is advisory.
+
 ## Save serialization
 
 Jupyter disk autosave is disabled and its toolbar Save button is hidden; application autosave remains active.
