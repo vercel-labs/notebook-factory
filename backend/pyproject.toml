@@ -19,6 +19,11 @@ dependencies = [
   "ai[vercel]>=0.8,<0.9",
   "pyjwt[crypto]>=2.10,<3",
 ]
+# The api service uses this file as its entrypoint (declared-only mode), so Vercel builds both
+# the web app and the workflow consumer; workflows are ignored for framework-detected services.
+[tool.vercel]
+entrypoint = "main:app"
+
 # Durable chat turns; Vercel builds this registry into a queue-triggered workflow function.
 [[tool.vercel.workflows]]
 entrypoint = "agent:workflow"

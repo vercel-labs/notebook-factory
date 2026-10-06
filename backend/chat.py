@@ -121,9 +121,26 @@ async def start_turn(notebook_id, messages, editing):
             notebook_id=notebook_id, model_id=chat_model(), messages=messages, editing=editing
         ),
     )
-    # Reconnects, continuations, and stops find the run through its hook.
-    await _wait_for_hook(notebook_id, run.run_id, present=True)
+    # Reconnects, continuations, and stops find the run through its hook. A run that never
+    # creates it is not executing (for example, no workflow consumer is deployed); fail instead
+    # of tailing an empty stream forever.
+    if not await _wait_started(notebook_id, run):
+        await run.terminate(reason="Chat turn did not start")
+        raise RuntimeError(f"Chat turn {run.run_id} did not start within 30 seconds")
     return run.run_id
+
+
+async def _wait_started(notebook_id, run, timeout=30.0):
+    """True once the run holds the notebook hook, or already finished (and released it)."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if await active_run(notebook_id) == run.run_id:
+            return True
+        if await run.status() in ("completed", "failed", "cancelled"):
+            return True
+        await asyncio.sleep(0.05)
+    return False
 
 
 async def stop_turn(notebook_id):

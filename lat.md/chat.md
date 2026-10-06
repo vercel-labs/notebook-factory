@@ -22,6 +22,8 @@ The turn runs [[backend/agent.py#NotebookAgent]], an ai.Agent whose custom loop 
 
 Tools still run in the browser. After a model step requests tools, the run parks on one hook per notebook, [[backend/agent.py#hook_token]], which also identifies the active run without a database column. The browser's automatic continuation resumes that hook with results for exactly the parked call IDs, and the response tails the run from just after the park. A continuation without a matching parked turn runs as a new turn from the browser's history. The resume also carries editing mode, so request_editing consent still switches tools mid-turn. A parked turn ends after [[backend/agent.py#PARK_SECONDS]].
 
+A turn counts as started once its run holds the hook or has already finished. If neither happens within 30 seconds, the run is terminated and the reply ends with an error instead of waiting forever.
+
 A new user message stops any unfinished turn first. When a reply ends in the browser for any reason, it calls the stop endpoint so the server turn does not linger. Stop reply therefore also cancels an in-flight model step.
 
 After history loads, [[frontend/src/Chat.tsx#Chat]] calls resumeStream. [[backend/main.py#resume_notebook_chat]] replays the active run from its start, including recorded tool outputs, and stops where the turn currently waits. The replay keeps the turn's assistant message ID, so it replaces a partially saved copy instead of duplicating it. Replayed tool calls are not executed. The endpoint uses [[backend/auth.py#require_owner_read]] because browsers send same-origin GETs without an Origin header.
@@ -32,7 +34,7 @@ Workflow events, hooks, and stream chunks live in Vercel Workflows storage; Post
 
 Tests run turns on the real local workflow world with a scripted model, covering live argument streaming and tool dispatch.
 
-They also cover resuming the parked run with tool results and a mid-turn switch to editing tools, stopping an in-flight model step, superseding an unfinished turn, replay up to the current wait, retry reset after partial output, and immediate free-tier errors.
+They also cover resuming the parked run with tool results and a mid-turn switch to editing tools, stopping an in-flight model step, failing a turn that never starts, superseding an unfinished turn, replay up to the current wait, retry reset after partial output, and immediate free-tier errors.
 
 ## Durable turn API tests
 

@@ -89,7 +89,7 @@ Titles are set at creation and can be changed through [[chat#Notebook renaming]]
 
 [vercel.json](../vercel.json) routes `/api/:path*` to the FastAPI service rooted at `backend` and `/(.*)` to the Vite service rooted at `frontend`.
 
-The API entrypoint is `main:app`, with a 300-second function limit. The catch-all deliberately uses `/(.*)`: the previous `/:path*` form missed the bare root path in production. Deploy the repository root so both services and rewrites are included.
+The API service uses `pyproject.toml` as its entrypoint, so [backend/pyproject.toml](../backend/pyproject.toml) declares both the web app (`main:app`) and the workflow consumer for [[chat#Durable turns]]. Vercel skips the workflow declaration for framework-detected services, which leaves runs queued with nothing executing them. The service requests a 300-second function limit. The catch-all deliberately uses `/(.*)`: the previous `/:path*` form missed the bare root path in production. Deploy the repository root so both services and rewrites are included.
 
 [frontend/package.json](../frontend/package.json) defines React 19, TypeScript, Vite, and Lucide dependencies. [backend/pyproject.toml](../backend/pyproject.toml) defines FastAPI, SQLAlchemy, Psycopg, nbformat, nbconvert, and the Python Sandbox SDK; the lockfiles resolve installed versions. `backend/.python-version` selects Python 3.13.
 

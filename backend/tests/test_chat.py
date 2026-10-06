@@ -321,6 +321,22 @@ async def test_failed_model_step_retries_and_resets_partial_output(monkeypatch, 
 
 
 # @lat: [[chat#Durable turn tests]]
+async def test_turn_that_never_starts_fails_instead_of_hanging(monkeypatch, nb):
+    from unittest.mock import AsyncMock, Mock
+
+    run = Mock(run_id="wrun_never", terminate=AsyncMock())
+    monkeypatch.setattr(chat.vercel.workflow, "start", AsyncMock(return_value=run))
+
+    async def never(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(chat, "_wait_started", never)
+    events = await asyncio.wait_for(collect(chat.stream(nb, ui(user("hi")), editing=False)), 10)
+    assert events == [{"type": "error", "errorText": agent.REQUEST_FAILED}]
+    run.terminate.assert_awaited_once()
+
+
+# @lat: [[chat#Durable turn tests]]
 async def test_free_tier_error_is_reported_without_retry(monkeypatch, nb):
     calls = script(monkeypatch, RuntimeError(agent.FREE_TIER))
     events = await collect(chat.stream(nb, ui(user("hi")), editing=False))
