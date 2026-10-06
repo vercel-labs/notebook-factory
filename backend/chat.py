@@ -104,6 +104,49 @@ async def active_run(notebook_id):
         return None
 
 
+TERMINAL = ("completed", "failed", "cancelled")
+
+
+async def live_run(notebook_id):
+    """The active run, ignoring a stale hook whose run already reached a terminal status."""
+    run_id = await active_run(notebook_id)
+    if run_id is None:
+        return None
+    try:
+        status = await vercel.workflow.Run(run_id).status()
+    except Exception:
+        log.exception("Could not read chat turn %s status", run_id)
+        return run_id
+    if status in TERMINAL:
+        log.warning("Ignoring stale chat hook for %s run %s", status, run_id)
+        return None
+    return run_id
+
+
+async def turn_state(notebook_id):
+    """What the browser may reattach to: no turn, a model step in progress, or parked tools."""
+    run_id = await live_run(notebook_id)
+    if run_id is None:
+        return {"active": False}
+    _, tail = await _tail(run_id)
+    if isinstance(tail, agent.Lifecycle) and tail.type == "parked":
+        return {
+            "active": True,
+            "phase": "awaiting_tools",
+            "tool_call_ids": tail.tool_call_ids,
+            "editing": tail.editing,
+        }
+    return {"active": True, "phase": "model", "tool_call_ids": [], "editing": False}
+
+
+def turn_marker(event):
+    """Transient UI data part saying why a response ended, so clients can tell it from a drop."""
+    data = {"state": event.type}
+    if event.type == "parked":
+        data.update(toolCallIds=event.tool_call_ids, editing=event.editing)
+    return {"type": "data-turn", "data": data, "transient": True}
+
+
 async def _wait_for_hook(notebook_id, run_id, present, timeout=10.0):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -189,12 +232,17 @@ def _sse(event):
 
 
 async def relay(run_id, start_index=0, message_id=None, *, replay=False):
-    """Relay one response's worth of a turn stream: until it parks for tools or ends."""
+    """Relay one response's worth of a turn stream: until it parks for tools or ends.
+
+    Responses that reach a lifecycle event end with a transient `data-turn` marker; a response
+    without one was cut off and should reconnect.
+    """
     error = None
+    end = None
     hydrator = ai.events.MessageHydrator()
 
     async def events():
-        nonlocal error
+        nonlocal error, end
         run = vercel.workflow.Run(run_id)
         source = run.readable(type=agent.StreamEvent, start_index=start_index)
         index = start_index - 1
@@ -207,6 +255,7 @@ async def relay(run_id, start_index=0, message_id=None, *, replay=False):
                         if (await run.stream_info()).tail_index > index:
                             continue
                     error = event.error
+                    end = event
                     return
                 event = hydrator.feed(event)
                 # Live continuations already hold these outputs; re-emitting their calls would
@@ -230,6 +279,8 @@ async def relay(run_id, start_index=0, message_id=None, *, replay=False):
         error = agent.REQUEST_FAILED
     if error:
         yield _sse({"type": "error", "errorText": error})
+    if end is not None:
+        yield _sse(turn_marker(end))
     yield "data: [DONE]\n\n"
 
 
@@ -265,8 +316,8 @@ async def stream(notebook_id, ui_messages, *, editing):
 
 
 async def reconnect(notebook_id):
-    """Replay the in-progress turn from its start, or None when no turn is active."""
-    run_id = await active_run(notebook_id)
+    """Replay the in-progress turn from its start, or None when no turn is active (stale)."""
+    run_id = await live_run(notebook_id)
     if run_id is None:
         return None
     return relay(run_id, replay=True)

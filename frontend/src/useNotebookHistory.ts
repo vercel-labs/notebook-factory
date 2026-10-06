@@ -15,6 +15,16 @@ export function useNotebookHistory(notebookId: string, token: string | null, mes
   const active = useRef(true);
   const serialized = useMemo(() => JSON.stringify(messages), [messages]);
   const dirty = loaded && serialized !== saved;
+  const savedCount = useMemo(() => (JSON.parse(saved) as unknown[]).length, [saved]);
+  // During a reply, checkpoint everything up to the latest user message so a reload keeps the
+  // prompt of the running turn. The in-flight assistant message is saved once the turn ends, and
+  // a checkpoint never shortens the saved conversation.
+  const checkpoint = useMemo(() => {
+    if (!busy) return null;
+    let end = messages.length;
+    while (end > 0 && messages[end - 1].role !== "user") end--;
+    return end > savedCount ? JSON.stringify(messages.slice(0, end)) : null;
+  }, [busy, messages, savedCount]);
   const endpoint = `/api/notebooks/${notebookId}/chat-history`;
 
   useEffect(() => {
@@ -45,11 +55,11 @@ export function useNotebookHistory(notebookId: string, token: string | null, mes
   }, [endpoint, token, reload, setMessages]);
 
   useEffect(() => {
-    if (readOnly || !loaded || busy || !dirty || error || inFlight.current) return;
+    const snapshot = busy ? checkpoint : serialized;
+    if (readOnly || !loaded || !dirty || !snapshot || snapshot === saved || error || inFlight.current) return;
     inFlight.current = true;
     setSaving(true);
-    const snapshot = serialized;
-    const snapshotOffset = messages.length ? offset.current : 0;
+    const snapshotOffset = snapshot !== "[]" ? offset.current : 0;
     fetch(endpoint, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, revision: revision.current, offset: snapshotOffset, messages: JSON.parse(snapshot) }),
@@ -66,7 +76,7 @@ export function useNotebookHistory(notebookId: string, token: string | null, mes
       inFlight.current = false;
       if (active.current) setSaving(false);
     });
-  }, [readOnly, loaded, busy, dirty, error, serialized, endpoint, token, saving]);
+  }, [readOnly, loaded, busy, dirty, error, serialized, checkpoint, saved, endpoint, token, saving]);
 
   return {
     loaded, loading, saving, error,

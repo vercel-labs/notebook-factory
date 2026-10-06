@@ -254,7 +254,51 @@ async def test_stop_cancels_an_in_flight_model_step(monkeypatch, nb):
     await asyncio.wait_for(chat.stop_turn(nb), 10)
     events = await asyncio.wait_for(reply, 10)
     assert "error" not in types(events)
+    assert events[-1] == {"type": "data-turn", "data": {"state": "stopped"}, "transient": True}
     assert await chat.active_run(nb) is None
+
+
+# @lat: [[chat#Durable turn tests]]
+async def test_turn_state_reports_phase_and_end_markers(monkeypatch, nb):
+    message = assistant(M.TextPart(text="Thinking"))
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow():
+        yield ai.events.StreamStart(message=message)
+        started.set()
+        await release.wait()
+        yield ai.events.StreamEnd(message=message, finish_reason="tool_call")
+
+    script(
+        monkeypatch,
+        slow,
+        assistant(call("c1"), call("c2", "scroll_notebook", '{"direction": "top"}')),
+        assistant(M.TextPart(text="Done")),
+    )
+    assert await chat.turn_state(nb) == {"active": False}
+    reply = asyncio.create_task(collect(chat.stream(nb, ui(user("hi")), editing=True)))
+    await asyncio.wait_for(started.wait(), 10)
+    state = await chat.turn_state(nb)
+    assert state["active"] and state["phase"] == "model"
+    release.set()
+    first = await asyncio.wait_for(reply, 10)
+    # The text-only first step ends the turn, which is marked done.
+    assert first[-1]["data"] == {"state": "done"}
+    await wait_idle(nb)
+
+    parked = await collect(chat.stream(nb, ui(user("edit", "u2")), editing=True))
+    marker = {"state": "parked", "toolCallIds": ["c1", "c2"], "editing": True}
+    assert parked[-1] == {"type": "data-turn", "data": marker, "transient": True}
+    assert await chat.turn_state(nb) == {
+        "active": True,
+        "phase": "awaiting_tools",
+        "tool_call_ids": ["c1", "c2"],
+        "editing": True,
+    }
+    replay = await collect(await chat.reconnect(nb))
+    assert replay[-1]["data"] == marker
+    await chat.stop_turn(nb)
+    assert await chat.turn_state(nb) == {"active": False}
 
 
 # @lat: [[chat#Durable turn tests]]
@@ -313,7 +357,7 @@ async def test_failed_model_step_retries_and_resets_partial_output(monkeypatch, 
     assert len(calls) == 2
     kinds = types(events)
     assert kinds.index("reset-step") > kinds.index("text-delta")
-    assert events[-1]["type"] == "finish"
+    assert types(events)[-2:] == ["finish", "data-turn"]
     assert [event["delta"] for event in events if event["type"] == "text-delta"] == [
         "Half",
         "Whole answer",
@@ -357,6 +401,7 @@ async def test_turn_that_never_starts_fails_instead_of_hanging(monkeypatch, nb):
 async def test_free_tier_error_is_reported_without_retry(monkeypatch, nb):
     calls = script(monkeypatch, RuntimeError(agent.FREE_TIER))
     events = await collect(chat.stream(nb, ui(user("hi")), editing=False))
-    assert events[-1] == {"type": "error", "errorText": agent.PAID_CREDITS}
+    assert events[-2] == {"type": "error", "errorText": agent.PAID_CREDITS}
+    assert events[-1]["data"] == {"state": "error"}
     assert len(calls) == 1
     await wait_idle(nb)
