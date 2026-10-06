@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
@@ -27,11 +26,6 @@ if not DATABASE_URL:
     DATABASE_URL = "sqlite+aiosqlite:///" + str(Path(__file__).with_name("notebooks.db"))
 if DATABASE_URL.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://", "postgresql+psycopg://")):
     DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL.split("://", 1)[1]
-    url = urlsplit(DATABASE_URL)
-    query = dict(parse_qsl(url.query))
-    # Marketplace attribution is not a PostgreSQL connection option.
-    query.pop("supa", None)
-    DATABASE_URL = urlunsplit(url._replace(query=urlencode(query)))
 if PRODUCTION and not DATABASE_URL.startswith("postgresql+psycopg://"):
     raise RuntimeError("Use a durable Postgres DATABASE_URL on Vercel")
 MAX_BYTES = 10 * 1024 * 1024
