@@ -18,7 +18,7 @@ import chat
 import editor
 import publication
 import workspace_events
-from auth import require_owner, require_user
+from auth import require_owner, require_owner_read, require_user
 from auth import router as auth_router
 from config import APP_URL
 from db import engine, initialize, notebooks, timestamp, users
@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 async def lifespan(app):
     try:
         await initialize()
-        yield
+        async with chat.local_workflow_queue():
+            yield
     finally:
         await engine.dispose()
 
@@ -558,7 +559,7 @@ async def notebook_chat(id: str, request: Request):
         raise HTTPException(413, "Chat history is too large. Start a new chat.")
     try:
         body = chat.ChatRequest.model_validate_json(raw)
-        messages, _ = chat.ai.ui.ai_sdk.to_messages(body.messages)
+        chat.ai.ui.ai_sdk.to_messages(body.messages)
     except ValueError:
         raise HTTPException(422, "Invalid chat messages") from None
     if body.token:
@@ -566,12 +567,24 @@ async def notebook_chat(id: str, request: Request):
     else:
         await get_notebook(id)
     return StreamingResponse(
-        chat.stream(
-            messages, body.messages[-1].id if body.messages[-1].role == "assistant" else None,
-            editing=bool(body.token),
-        ),
+        chat.stream(id, body.messages, editing=bool(body.token)),
         headers=chat.ai.ui.ai_sdk.UI_MESSAGE_STREAM_HEADERS,
     )
+
+
+@app.get("/api/notebooks/{id}/chat/stream", dependencies=[Depends(require_owner_read)])
+async def resume_notebook_chat(id: str):
+    """Reattach to an in-progress turn after a reload or dropped connection."""
+    replay = await chat.reconnect(id)
+    if replay is None:
+        return Response(status_code=204)
+    return StreamingResponse(replay, headers=chat.ai.ui.ai_sdk.UI_MESSAGE_STREAM_HEADERS)
+
+
+@app.post("/api/notebooks/{id}/chat/stop", dependencies=[Depends(require_owner)])
+async def stop_notebook_chat(id: str):
+    await chat.stop_turn(id)
+    return Response(status_code=204)
 
 
 @app.post("/api/notebooks/{id}/chat-history")
