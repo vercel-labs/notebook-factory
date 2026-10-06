@@ -4,7 +4,7 @@ A public Python notebook library with Vercel sign-in, per-user ownership, read-o
 
 ## Overall architecture on Vercel
 
-Vercel hosts the web and API services, isolates Python execution in Sandbox, serves published artifacts through Blob, and routes model requests through AI Gateway. Supabase Postgres holds durable application state.
+Vercel hosts the web and API services, isolates Python execution in Sandbox, serves published artifacts through Blob, and routes model requests through AI Gateway. Neon Postgres holds durable application state.
 
 The application and publication path uses two services in one Vercel deployment. API calls share the app origin; published HTML is fetched directly from Blob. Vercel OIDC enrolls users through the API; each notebook has one owner.
 
@@ -17,14 +17,14 @@ flowchart TB
     end
     browser -->|"app assets"| web
     browser <-->|"/api requests"| api
-    api <-->|"durable state"| supabase[("Supabase Postgres")]
+    api <-->|"durable state"| neon[("Neon Postgres")]
     api -->|"publish HTML"| blob["Vercel Blob"]
     api <-->|"chat stream"| gateway["AI Gateway"]
     gateway <--> model["Model provider"]
     blob -->|"public HTML"| viewer["Browser viewer"]
 ```
 
-Browser and Browser viewer represent the same client, drawn separately to keep the publication path compact. Supabase is connected through Vercel Marketplace. The viewer isolates HTML in a sandboxed iframe; reading a publication never starts a Python kernel.
+Browser and Browser viewer represent the same client, drawn separately to keep the publication path compact. Neon is connected through Vercel Marketplace. The viewer isolates HTML in a sandboxed iframe; reading a publication never starts a Python kernel.
 
 Notebook execution has a separate lifecycle. The API manages the Sandbox, while the embedded editor connects directly to JupyterLab for HTTP and kernel WebSockets.
 
@@ -42,7 +42,7 @@ flowchart TB
     sandbox -->|"runs"| jupyter
     browser <-->|"direct HTTP + WebSockets"| jupyter
     browser -->|"export draft to API"| save["FastAPI: save / publish"]
-    save -->|"persist document"| supabase[("Supabase Postgres")]
+    save -->|"persist document"| neon[("Neon Postgres")]
 ```
 
 The two FastAPI nodes represent the same backend service. The dependency drive contains prepared dependencies, including fonts from Blob, but no private notebook data. The API supplies the current draft and editor assets when creating a session. AI cell tools use the browser bridge to operate on this live editor.
@@ -55,7 +55,7 @@ The two FastAPI nodes represent the same backend service. The dependency drive c
 | Vercel AI Gateway and AI SDK | Route configured model inference and stream assistant responses; browser tools apply cell edits and execution through the authenticated Jupyter bridge. | [[backend/chat.py#stream]], [[frontend/src/Chat.tsx#Chat]], [[chat#Live document tools]] |
 | Vercel Queues | Signal sidebar metadata changes to every API instance holding live sidebar WebSockets. | [[backend/workspace_events.py#notify]], [[architecture#Live sidebar updates]] |
 | Vercel deployment identity | Supply OIDC for backend Sandbox, Gateway, and Queues access. Blob uses its backend-only read/write token; database and OAuth credentials remain backend configuration. | [[backend/main.py#headers]], [[deployment#Environment configuration]] |
-| Supabase via Vercel Marketplace | Persist notebook drafts, published source and fallback HTML, chat history, editor session records, and operation leases across requests and deployments. | [[backend/db.py]], [[architecture#Persistence]], [[chat#Persistent conversations]] |
+| Neon via Vercel Marketplace | Persist notebook drafts, published source and fallback HTML, chat history, editor session records, and operation leases across requests and deployments. | [[backend/db.py]], [[architecture#Persistence]], [[chat#Persistent conversations]] |
 
 ### Main data flows
 
@@ -110,9 +110,9 @@ Browser API calls stay on the app origin. Editor HTTP and WebSocket traffic conn
 | `chat_history`, `chat_revision` | Publicly readable conversation with owner-only writes and optimistic concurrency counter |
 | `claim`, `claim_until` | Atomic operation lease shared across function instances |
 
-[[backend/db.py#initialize]] creates missing tables under a Postgres transaction advisory lock. It targets a fresh database, with no reserved users or legacy GitHub migrations. Postgres retains up to two idle connections with three overflow connections, pre-ping checks, and five-minute recycling to avoid repeating connection setup on every request. SQLite tests use NullPool. Application shutdown disposes the pool.
+[[backend/db.py#initialize]] creates missing tables under a Postgres transaction advisory lock. It targets a fresh database, with no reserved users or legacy GitHub migrations. Both Postgres and SQLite use NullPool, so each operation opens and closes its own connection; application shutdown disposes the engine.
 
-[[backend/config.py]] normalizes conventional Postgres URLs for Psycopg and removes Supabase attribution parameters; PostgreSQL TLS options are retained. Deployment startup rejects missing or non-Postgres database configuration.
+[[backend/config.py]] normalizes conventional Postgres URLs for Psycopg, retaining query options such as TLS and channel binding. Deployment startup rejects missing or non-Postgres database configuration.
 
 [[backend/main.py#editor_lease]] serializes create-editor, save, and close operations with a five-minute database lease. Conflicting operations return 409. Lease release matches the claim token, so one request cannot clear another request’s lease.
 
@@ -200,7 +200,7 @@ The public sidebar renders independently of authentication and updates live over
 
 [[frontend/src/main.tsx#cachedNotebooks]] stores only the public list and published render URLs in session storage. Auth and edit permissions are never cached. Fresh list responses replace cached entries and reconcile selection; unavailable storage falls back to normal loading.
 
-Opening the app without a notebook query parameter shows a welcome prompt to choose from the sidebar, never selecting the first cached or fetched notebook automatically. Direct notebook links still open their target; missing targets return to the welcome view. The logo returns to this unselected view while preserving mounted editors. Switching notebooks shows the destination publication unless it already has a connected editor in this browser; a green sidebar dot identifies those live editors. Returning reuses the same iframe and kernel. On mobile, Browse notebooks opens navigation. An empty workspace retains its creation prompt. [[backend/db.py]] closes app-side connections after each database operation and delegates pooling to Supabase transaction mode.
+Opening the app without a notebook query parameter shows a welcome prompt to choose from the sidebar, never selecting the first cached or fetched notebook automatically. Direct notebook links still open their target; missing targets return to the welcome view. The logo returns to this unselected view while preserving mounted editors. Switching notebooks shows the destination publication unless it already has a connected editor in this browser; a green sidebar dot identifies those live editors. Returning reuses the same iframe and kernel. On mobile, Browse notebooks opens navigation. An empty workspace retains its creation prompt. [[backend/db.py]] closes app-side connections after each database operation and delegates pooling to Neon's pooled (PgBouncer transaction mode) endpoint.
 
 
 ## Notebook deletion
@@ -280,4 +280,4 @@ The browser debounces searches for 250 milliseconds, cancels stale requests, sho
 
 The public `/about` route provides a compact technical overview, with component responsibilities and links to source code and architecture documentation.
 
-[[frontend/src/About.tsx#About]] covers Vercel Services connecting the backend and frontend in one project, Vercel CDN, Python hosting with FastAPI, Supabase, Blob, AI Gateway, Python AI SDK, AI SDK UI, Sandbox and its Python SDK, Jupyter, Vite, and lat.md (the final entry). The sidebar exposes the page, and the Vite build emits an About app shell for direct `/about` requests. In-app navigation retains mounted editors and background chat work, while browser history supports leaving and returning to the page. The layout uses simple typography and a responsive definition list in its own scroll area. Supabase appears first, Vite and CDN share one entry with separate links. Every technology in the left column links to its documentation; Python AI SDK points to ai-python.dev, its AI SDK UI compatibility is explicit, and the Sandbox description links to the Python SDK reference. Vercel products and SDKs use triangle branding, and GitHub source and “See lat.md project architecture” buttons precede the list. The docs button opens [[deployment#Static project documentation|the static Lat UI]] at `/lat/`.
+[[frontend/src/About.tsx#About]] covers Vercel Services connecting the backend and frontend in one project, Vercel CDN, Python hosting with FastAPI, Neon, Blob, AI Gateway, Python AI SDK, AI SDK UI, Sandbox and its Python SDK, Jupyter, Vite, and lat.md (the final entry). The sidebar exposes the page, and the Vite build emits an About app shell for direct `/about` requests. In-app navigation retains mounted editors and background chat work, while browser history supports leaving and returning to the page. The layout uses simple typography and a responsive definition list in its own scroll area. Neon appears first, Vite and CDN share one entry with separate links. Every technology in the left column links to its documentation; Python AI SDK points to ai-python.dev, its AI SDK UI compatibility is explicit, and the Sandbox description links to the Python SDK reference. Vercel products and SDKs use triangle branding, and GitHub source and “See lat.md project architecture” buttons precede the list. The docs button opens [[deployment#Static project documentation|the static Lat UI]] at `/lat/`.

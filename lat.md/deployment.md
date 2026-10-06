@@ -1,6 +1,6 @@
 # Deployment and operation
 
-The app deploys from the repository root as two Vercel Services, with Supabase Postgres for persistence and Vercel Sandbox for notebook execution.
+The app deploys from the repository root as two Vercel Services, with Neon Postgres for persistence and Vercel Sandbox for notebook execution.
 
 ## Production project
 
@@ -13,7 +13,7 @@ The configured production application is [notebooks.sh](https://notebooks.sh), u
 | Vercel project | `notebook-factory` |
 | Project ID | `prj_46j0HKfLl1LIgBGdDMaXXEpTUpFh` |
 | Team ID | `team_TtmJZYmD3tcLBLqWOhoVawd1` |
-| Database | Connected Supabase Marketplace integration |
+| Database | Connected Neon Marketplace integration (`neon-emerald-anchor`), Production and Preview |
 | User enrollment | Any Vercel account, up to 300 admitted users |
 
 These are the project details verified from the new project linkage on October 2, 2026. Local linkage lives in the ignored `.vercel/project.json`. Production has been deployed directly from the working tree with the CLI; a successful deployment does not imply those changes have been committed or pushed.
@@ -32,7 +32,7 @@ The production alias is public. Unique deployment URLs have Vercel deployment pr
 | `QUEUE_REGION` | Optional Vercel Queues region for live sidebar signals; defaults to `iad1` |
 | `BLOB_READ_WRITE_TOKEN` | Backend upload credential for the public rendered-notebook Blob store |
 | `SESSION_SECRET` | Random signing secret, at least 32 characters in every deployed environment; use a separate value for Preview |
-| `DATABASE_URL` / `POSTGRES_URL` | Postgres connection URL; explicit DATABASE_URL takes precedence over the Supabase integration alias |
+| `DATABASE_URL` / `POSTGRES_URL` | Postgres connection URL; Neon sets the pooled DATABASE_URL, which takes precedence over the POSTGRES_URL alias |
 | `VERCEL_APP_CLIENT_ID` | OAuth application client ID, scoped to Production and Preview |
 | `VERCEL_APP_CLIENT_SECRET` | OAuth application secret, scoped to Production and Preview |
 | `VERCEL_OIDC_TOKEN` | Request-scoped Sandbox identity in deployment, or an explicitly loaded local token |
@@ -44,7 +44,7 @@ The Sign in with Vercel app's callback is configured by selecting this Vercel pr
 
 The backend loads `backend/.env`; it does not automatically load a root `.env.local` produced by CLI environment commands. Load or export that file explicitly when using its credentials locally. Never put backend secrets in `VITE_*` variables, which are client-visible.
 
-Marketplace connection supplies the database variables. The application reads DATABASE_URL, falling back to the Supabase integration’s POSTGRES_URL. The integration's transaction-pooler URL is preserved. SQLAlchemy uses async Psycopg with prepared statements disabled and NullPool: connections close after each operation rather than occupying Supabase session slots across idle serverless instances. Database context managers close connections on both success and exceptions; lifespan cleanup also disposes the engine in a finally block. Only the FastAPI backend connects to the application database; sandbox provisioning does not pass database credentials into the VM. Provider-only `supa` attribution is stripped; standard PostgreSQL TLS options are retained, with STARTTLS negotiation explicitly selected for Supavisor compatibility. Required environment changes take effect in a new deployment. Startup creates the schema in a fresh database. It does not migrate the old GitHub schema; use a new DATABASE_URL. Future schema changes need an explicit migration strategy.
+Marketplace connection supplies the database variables. The application reads Neon's pooled DATABASE_URL, falling back to POSTGRES_URL. SQLAlchemy uses async Psycopg with prepared statements disabled for the PgBouncer transaction pooler and NullPool: connections close after each operation rather than holding pooler slots across idle serverless instances. Database context managers close connections on both success and exceptions; lifespan cleanup also disposes the engine in a finally block. Only the FastAPI backend connects to the application database; sandbox provisioning does not pass database credentials into the VM. URL query options such as `sslmode` and `channel_binding` are passed through unchanged. Required environment changes take effect in a new deployment. Startup creates the schema in a fresh database. It does not migrate the old GitHub schema; use a new DATABASE_URL. Future schema changes need an explicit migration strategy.
 
 ### Preview origins
 
@@ -154,7 +154,7 @@ This implementation requires a fresh database and a Sign in with Vercel applicat
 
 In the target team's Settings → Apps, create an app with Sign-In Access set to **Anyone with a Vercel account**. Enable openid/profile scopes, select client_secret_post authentication, and add an authorization callback by selecting this Vercel project so production and preview domains both work. Store the client ID and secret in VERCEL_APP_CLIENT_ID and VERCEL_APP_CLIENT_SECRET for Production and Preview. Local development can register `http://localhost:5173/api/auth/callback` as well. See [Vercel app configuration](https://vercel.com/docs/sign-in-with-vercel/manage-from-dashboard).
 
-Use a new Supabase database and SESSION_SECRET for the new deployment. No old accounts, notebooks, or GitHub sessions are imported. Startup creates empty tables, enrollment admits the first 300 users, and the database independently caps users at 500. Runtime names and writable drives are user-scoped. Saved notebooks and chats remain publicly readable; mutations require ownership. Deploy frontend and backend together. This application login is separate from Vercel deployment protection.
+Use a new Neon database and SESSION_SECRET for the new deployment. No old accounts, notebooks, or GitHub sessions are imported. Startup creates empty tables, enrollment admits the first 300 users, and the database independently caps users at 500. Runtime names and writable drives are user-scoped. Saved notebooks and chats remain publicly readable; mutations require ownership. Deploy frontend and backend together. This application login is separate from Vercel deployment protection.
 
 ## Static project documentation
 

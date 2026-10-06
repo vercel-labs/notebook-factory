@@ -3,7 +3,7 @@ import { BookOpen, Github } from "lucide-react";
 
 const source = "https://github.com/vercel-labs/notebook-factory";
 const components: { name: string; url: string; text: ReactNode; links?: { name: string; url: string }[] }[] = [
-  { name: "Supabase", url: "https://supabase.com/", text: "Postgres stores users, notebook documents and outputs, published revisions, chat history, and editor sessions. It also powers full-text search across notebook titles and content." },
+  { name: "Neon", url: "https://neon.com/docs/introduction", text: "Postgres stores users, notebook documents and outputs, published revisions, chat history, and editor sessions. It also powers full-text search across notebook titles and content." },
   { name: "Vercel CDN + Vite", url: "https://vercel.com/docs/cdn", links: [{ name: "Vercel CDN", url: "https://vercel.com/docs/cdn" }, { name: "Vite", url: "https://vite.dev/" }], text: "Vite builds the React frontend into static assets; Vercel CDN serves them." },
   { name: "Vercel + FastAPI", url: "https://vercel.com/docs/frameworks/backend/fastapi", links: [{ name: "Vercel", url: "https://vercel.com/docs/frameworks/backend/fastapi" }, { name: "FastAPI", url: "https://fastapi.tiangolo.com/" }], text: "Runs FastAPI on Vercel Fluid Serverless platform." },
   { name: "Vercel Services", url: "https://vercel.com/docs/services", text: "Deploys the FastAPI backend and Vite frontend together in one project, with shared routing under one domain." },
