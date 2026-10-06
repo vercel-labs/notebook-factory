@@ -44,13 +44,22 @@ def model_events(message):
     yield ai.events.StreamEnd(message=message, finish_reason=reason)
 
 
+class Calls(list):
+    """Messages sent on each model call, plus the tool names offered on each call."""
+
+    def __init__(self):
+        super().__init__()
+        self.tools = []
+
+
 def script(monkeypatch, *responses):
     """Replace the model with scripted responses: messages, exceptions, or event generators."""
-    calls = []
+    calls = Calls()
 
     @asynccontextmanager
     async def stream(model, messages, **kwargs):
         calls.append(messages)
+        calls.tools.append({tool.name for tool in kwargs.get("tools") or []})
         response = responses[len(calls) - 1]
         if isinstance(response, Exception):
             raise response
@@ -205,6 +214,10 @@ async def test_tool_results_resume_the_parked_turn(monkeypatch, nb):
         part for message in calls[1] if message.role == "tool" for part in message.tool_results
     ]
     assert [(part.tool_call_id, part.result) for part in results] == [("c1", {"cells": ["x"]})]
+    # Consent arrived with the results: the rest of the turn uses the editing prompt and tools.
+    assert calls.tools[0] == {"read_notebook", "request_editing"}
+    assert "insert_cell" in calls.tools[1]
+    assert calls[0][0].text == agent.VIEW_SYSTEM and calls[1][0].text == agent.SYSTEM
     await wait_idle(nb)
     assert await vercel.workflow.Run(run_id).status() == "completed"
 
@@ -222,6 +235,26 @@ async def test_new_message_supersedes_unfinished_turn(monkeypatch, nb):
     assert await vercel.workflow.Run(parked).status() == "completed"
     assert calls[1][-1].text == "never mind"
     await wait_idle(nb)
+
+
+# @lat: [[chat#Durable turn tests]]
+async def test_stop_cancels_an_in_flight_model_step(monkeypatch, nb):
+    message = assistant(M.TextPart(text="Thinking"))
+    started = asyncio.Event()
+
+    async def slow():
+        yield ai.events.StreamStart(message=message)
+        started.set()
+        await asyncio.sleep(30)
+        yield ai.events.StreamEnd(message=message, finish_reason="stop")
+
+    script(monkeypatch, slow)
+    reply = asyncio.create_task(collect(chat.stream(nb, ui(user("hi")), editing=False)))
+    await asyncio.wait_for(started.wait(), 10)
+    await asyncio.wait_for(chat.stop_turn(nb), 10)
+    events = await asyncio.wait_for(reply, 10)
+    assert "error" not in types(events)
+    assert await chat.active_run(nb) is None
 
 
 # @lat: [[chat#Durable turn tests]]

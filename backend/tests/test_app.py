@@ -720,7 +720,7 @@ def test_view_chat_and_history_do_not_require_or_start_editor(client, monkeypatc
     assert client.put(f"/api/notebooks/{id}/chat-history", json={"messages": messages, "revision": 0}).status_code == 200
     assert client.post(f"/api/notebooks/{id}/chat-history", json={}).json()["messages"][0]["parts"][0]["text"] == "Explain this notebook"
     assert client.put(f"/api/notebooks/{id}/chat-history", json={"messages": [], "revision": 0}).status_code == 409
-    assert {tool.name for tool in main.chat.VIEW_TOOLS} == {"read_notebook", "request_editing"}
+    assert {tool.name for tool in main.chat.agent.VIEW_TOOLS} == {"read_notebook", "request_editing"}
     start.assert_not_awaited()
     # Reconnecting is a same-origin GET without an Origin header; nothing is running.
     origin = client.headers.pop("origin", None)

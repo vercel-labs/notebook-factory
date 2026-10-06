@@ -16,6 +16,8 @@ The Python 0.8 UI adapter dispatches completed client tool inputs through an emp
 
 Each user message starts one Vercel Workflows run, [[backend/agent.py#run_turn]], so a reply survives dropped connections, reloads, function timeouts, and failed model calls.
 
+The turn runs [[backend/agent.py#NotebookAgent]], an ai.Agent whose custom loop alternates durable model steps with browser tool rounds. It runs in lockstep with the workflow, which records each non-model event on the stream.
+
 [[backend/agent.py#llm_step]] is a retried, cancellable step that writes AI events to the run's stream as they arrive; [[backend/chat.py#relay]] tails that stream into the same AI SDK UI response, so tokens, reasoning, and tool arguments still stream live. A retry after partial output emits a reset so the browser drops it. Gateway free-tier rejections fail immediately with the paid-credits message.
 
 Tools still run in the browser. After a model step requests tools, the run parks on one hook per notebook, [[backend/agent.py#hook_token]], which also identifies the active run without a database column. The browser's automatic continuation resumes that hook with results for exactly the parked call IDs, and the response tails the run from just after the park. A continuation without a matching parked turn runs as a new turn from the browser's history. The resume also carries editing mode, so request_editing consent still switches tools mid-turn. A parked turn ends after [[backend/agent.py#PARK_SECONDS]].
@@ -30,7 +32,7 @@ Workflow events, hooks, and stream chunks live in Vercel Workflows storage; Post
 
 Tests run turns on the real local workflow world with a scripted model, covering live argument streaming and tool dispatch.
 
-They also cover resuming the parked run with tool results, superseding an unfinished turn, replay up to the current wait, retry reset after partial output, and immediate free-tier errors.
+They also cover resuming the parked run with tool results and a mid-turn switch to editing tools, stopping an in-flight model step, superseding an unfinished turn, replay up to the current wait, retry reset after partial output, and immediate free-tier errors.
 
 ## Durable turn API tests
 
@@ -127,7 +129,7 @@ API coverage checks owner and Origin enforcement, stale editor tokens, blank and
 
 Owner chat works without an editor and does not start a Sandbox. Its tools are limited to reading the published document and requesting permission to enter editing; history writes remain owner-protected and revision-checked.
 
-[[backend/chat.py#VIEW_TOOLS]] and [[backend/chat.py#VIEW_SYSTEM]] answer questions about existing content in chat. Creation and demonstration requests, including open-ended requests for a chart or trick, target the notebook and request editing consent instead of substituting inline chat content. Editing instructions require one focused notebook example and describe automatic publication. [[frontend/src/Chat.tsx#Chat]] reads published cells and bounded text outputs from the download endpoint. The permission tool displays Yes/No buttons. No returns a declined result without starting anything. Yes awaits editor and document readiness, then continues the same turn using the active editor token and full editing tools. The assistant rereads the live draft because it may differ from published content. A request arriving during an already-authorized editor startup waits for that startup without asking again. If the editor connects while consent is displayed, the pending request resolves automatically and the redundant prompt disappears.
+[[backend/agent.py#VIEW_TOOLS]] and [[backend/agent.py#VIEW_SYSTEM]] answer questions about existing content in chat. Creation and demonstration requests, including open-ended requests for a chart or trick, target the notebook and request editing consent instead of substituting inline chat content. Editing instructions require one focused notebook example and describe automatic publication. [[frontend/src/Chat.tsx#Chat]] reads published cells and bounded text outputs from the download endpoint. The permission tool displays Yes/No buttons. No returns a declined result without starting anything. Yes awaits editor and document readiness, then continues the same turn using the active editor token and full editing tools. The assistant rereads the live draft because it may differ from published content. A request arriving during an already-authorized editor startup waits for that startup without asking again. If the editor connects while consent is displayed, the pending request resolves automatically and the redundant prompt disappears.
 
 Browser verification covers published context, no Sandbox on questions or refusal, accepting consent, retaining the conversation, and authenticated mode changes on continuation. Sending messages remains owner-only in both modes; other viewers can read saved conversations.
 
