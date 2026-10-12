@@ -43,6 +43,7 @@ def create(client):
         ("/api/notebooks/missing/delete", {}),
         ("/api/notebooks/missing/rename", {"token": "x", "title": "New title"}),
         ("/api/notebooks/missing/chat", {"token": "x", "messages": []}),
+        ("/api/notebooks/missing/chat/stop", {}),
     ],
 )
 def test_mutations_require_owner_and_origin(client, path, body):
@@ -705,7 +706,7 @@ def test_view_chat_and_history_do_not_require_or_start_editor(client, monkeypatc
     id = create(client)
     modes = []
 
-    async def stream(messages, message_id=None, *, editing):
+    async def stream(notebook_id, messages, *, editing):
         modes.append(editing)
         yield 'data: [DONE]\n\n'
 
@@ -719,11 +720,76 @@ def test_view_chat_and_history_do_not_require_or_start_editor(client, monkeypatc
     assert client.put(f"/api/notebooks/{id}/chat-history", json={"messages": messages, "revision": 0}).status_code == 200
     assert client.post(f"/api/notebooks/{id}/chat-history", json={}).json()["messages"][0]["parts"][0]["text"] == "Explain this notebook"
     assert client.put(f"/api/notebooks/{id}/chat-history", json={"messages": [], "revision": 0}).status_code == 409
-    assert {tool.name for tool in main.chat.VIEW_TOOLS} == {"read_notebook", "request_editing"}
+    assert {tool.name for tool in main.chat.agent.VIEW_TOOLS} == {"read_notebook", "request_editing"}
     start.assert_not_awaited()
+    # Reconnecting is a same-origin GET without an Origin header; nothing is running.
+    origin = client.headers.pop("origin", None)
+    assert client.get(f"/api/notebooks/{id}/chat/stream").status_code == 204
+    if origin:
+        client.headers["origin"] = origin
     client.cookies.clear()
     assert client.post(f"/api/notebooks/{id}/chat", json={"messages": messages}).status_code == 401
+    assert client.get(f"/api/notebooks/{id}/chat/stream").status_code == 401
     assert client.post(f"/api/notebooks/{id}/chat-history", json={}).status_code == 200
+
+
+# @lat: [[chat#Durable turn API tests]]
+def test_chat_turn_survives_reconnect_and_stops(client, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    import ai
+
+    id = create(client)
+    message = ai.types.messages.Message(
+        role="assistant",
+        parts=[
+            ai.types.messages.TextPart(text="Let me look."),
+            ai.types.messages.ToolCallPart(tool_call_id="c1", tool_name="read_notebook", tool_args="{}"),
+        ],
+    )
+
+    @asynccontextmanager
+    async def stream(*args, **kwargs):
+        async def events():
+            yield ai.events.StreamStart(message=message)
+            yield ai.events.TextStart(block_id="t", message=message)
+            yield ai.events.TextDelta(block_id="t", chunk="Let me look.", message=message)
+            yield ai.events.TextEnd(block_id="t", message=message)
+            yield ai.events.StreamEnd(message=message, finish_reason="tool_call")
+
+        yield events()
+
+    monkeypatch.setattr(ai, "stream", stream)
+    messages = [{"id": "u1", "role": "user", "parts": [{"type": "text", "text": "Read it"}]}]
+    first = client.post(f"/api/notebooks/{id}/chat", json={"messages": messages})
+    assert first.status_code == 200
+    assert '"type": "tool-input-available"' in first.text
+    assert first.text.endswith("data: [DONE]\n\n")
+
+    assert '"type": "data-turn"' in first.text and '"toolCallIds": ["c1"]' in first.text
+
+    # A reload checks the authoritative state, then reattaches without an Origin header and
+    # replays the parked turn, ending with the calls the browser still owes.
+    origin = client.headers.pop("origin")
+    assert client.get(f"/api/notebooks/{id}/chat/state").json() == {
+        "active": True,
+        "phase": "awaiting_tools",
+        "tool_call_ids": ["c1"],
+        "editing": False,
+    }
+    replay = client.get(f"/api/notebooks/{id}/chat/stream")
+    client.headers["origin"] = origin
+    assert replay.status_code == 200
+    assert "Let me look." in replay.text and '"toolCallId": "c1"' in replay.text
+    assert '"state": "parked"' in replay.text
+
+    assert client.post(f"/api/notebooks/{id}/chat/stop").status_code == 204
+    client.headers.pop("origin")
+    assert client.get(f"/api/notebooks/{id}/chat/stream").status_code == 204
+    assert client.get(f"/api/notebooks/{id}/chat/state").json() == {"active": False}
+    client.headers["origin"] = origin
+    client.cookies.clear()
+    assert client.get(f"/api/notebooks/{id}/chat/state").status_code == 401
 
 
 # @lat: [[editing#Automatic recovery tests]]
@@ -890,6 +956,85 @@ def test_workspace_fetches_all_sidebar_metadata_in_one_join(client):
     assert len({user["id"] for user in data["users"]}) == len(data["users"])
     notebook = next(item for item in data["notebooks"] if item["id"] == notebook_id)
     assert set(notebook) == {"id", "owner_id", "title", "updated_at", "revision", "render_url"}
+
+
+# @lat: [[architecture#Live sidebar tests]]
+def test_workspace_socket_pushes_snapshots_after_changes(client, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+    notebook_id = create(client)
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/workspace/live", headers={"origin": "https://evil.example"}):
+            pass
+    with pytest.raises(WebSocketDisconnect):
+        # A spoofed host must still match the Origin the browser sent.
+        with client.websocket_connect("/api/workspace/live", headers={
+            "origin": "https://evil.example", "x-forwarded-host": "preview.vercel.app",
+        }):
+            pass
+    # Preview and branch URLs differ from APP_URL but are same-origin with the request host.
+    for headers in ({"origin": "https://preview.vercel.app", "x-forwarded-host": "preview.vercel.app"},
+                    {"origin": "http://testserver"}):
+        with client.websocket_connect("/api/workspace/live", headers=headers) as socket:
+            assert socket.receive_json() == client.get("/api/workspace").json()
+    with client.websocket_connect("/api/workspace/live", headers={"origin": "http://localhost:5173"}) as socket:
+        assert socket.receive_json() == client.get("/api/workspace").json()
+        current = {"name": "live", "token": "secret", "url": "https://example.test"}
+        monkeypatch.setattr(main.editor, "start", AsyncMock(return_value=current))
+        # Opening an editor does not change sidebar metadata, so nothing is pushed for it.
+        assert client.post(f"/api/notebooks/{notebook_id}/editor", json={}).status_code == 200
+        response = client.post(f"/api/notebooks/{notebook_id}/rename",
+                               json={"token": "secret", "title": "Renamed live"})
+        assert response.status_code == 200
+        renamed = socket.receive_json()
+        assert next(n for n in renamed["notebooks"] if n["id"] == notebook_id)["title"] == "Renamed live"
+        created = client.post("/api/notebooks", json={"title": "Second live"}).json()
+        assert any(n["id"] == created["id"] for n in socket.receive_json()["notebooks"])
+        assert client.post(f"/api/notebooks/{created['id']}/delete").status_code == 200
+        assert all(n["id"] != created["id"] for n in socket.receive_json()["notebooks"])
+
+
+def test_queue_relay_delivers_changes_to_sockets(client, monkeypatch):
+    from vercel.queue.devserver import embedded_queue_dev_server
+    with embedded_queue_dev_server() as server:
+        monkeypatch.setenv("VERCEL_QUEUE_BASE_URL", server.base_url)
+        monkeypatch.setenv("VERCEL_QUEUE_TOKEN", "vc-dev-token")
+        monkeypatch.setattr(main.workspace_events, "IDLE_POLL_SECONDS", 0.05)
+        authenticate(client)
+        with client.websocket_connect("/api/workspace/live") as socket:
+            socket.receive_json()
+            created = client.post("/api/notebooks", json={"title": "Via queue"}).json()
+            assert any(n["id"] == created["id"] for n in socket.receive_json()["notebooks"])
+
+
+def test_http_requests_cache_oidc_token_for_socket_relay(client, monkeypatch):
+    # Deployed WebSocket upgrades carry no OIDC token; the relay must reuse one from HTTP.
+    import time
+
+    import jwt
+    from vercel.oidc import token as oidc
+
+    monkeypatch.delenv("VERCEL_OIDC_TOKEN", raising=False)
+    monkeypatch.setattr(main.workspace_events, "queue_enabled", lambda: True)
+    oidc._clear_cached_oidc_token()
+    try:
+        with pytest.raises(oidc.VercelOidcTokenError):
+            oidc.get_vercel_oidc_token_from_context()
+        token = jwt.encode({"exp": int(time.time()) + 3600}, "k" * 32, algorithm="HS256")
+        assert client.get("/api/workspace", headers={"x-vercel-oidc-token": token}).status_code == 200
+        # Outside any request context, as in the relay task, the cached token resolves.
+        assert client.portal.call(oidc.get_vercel_oidc_token_async) == token
+    finally:
+        oidc._clear_cached_oidc_token()
+
+
+def test_queue_publish_failure_does_not_fail_writes(client, monkeypatch):
+    class FailingClient:
+        async def send(self, *args, **kwargs):
+            raise RuntimeError("queue unavailable")
+    monkeypatch.setattr(main.workspace_events, "queue_enabled", lambda: True)
+    monkeypatch.setattr(main.workspace_events, "queue_client", FailingClient)
+    authenticate(client)
+    assert client.post("/api/notebooks", json={"title": "Still saved"}).status_code == 201
 
 
 # @lat: [[chat#Initial notebook prompt tests]]

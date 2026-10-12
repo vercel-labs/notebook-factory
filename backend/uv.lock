@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [options]
@@ -781,6 +781,7 @@ dependencies = [
     { name = "uvicorn" },
     { name = "vercel" },
     { name = "vercel-sandbox" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -804,8 +805,9 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1,<2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
-    { name = "vercel", specifier = ">=0.5,<1" },
+    { name = "vercel", specifier = ">=0.11,<1" },
     { name = "vercel-sandbox", specifier = ">=0.6,<0.7" },
+    { name = "websockets", specifier = ">=15,<17" },
 ]
 
 [package.metadata.requires-dev]

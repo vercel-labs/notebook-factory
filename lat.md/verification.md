@@ -17,7 +17,7 @@ node --test backend/tests/test_save_bridge.cjs
 lat check
 ```
 
-The current suite produces 26 passing test cases, including parameterized authorization cases. [[architecture#Authorization tests]] and [[architecture#Persistence tests]] remain stable anchors for existing test annotations.
+The current suite produces 102 passing test cases, including parameterized authorization cases. Chat tests run durable turns on the real local workflow world with a scripted model; see [[chat#Durable turn tests]]. [[architecture#Authorization tests]] and [[architecture#Persistence tests]] remain stable anchors for existing test annotations.
 
 Coverage includes owner/origin enforcement, invalid sessions and OAuth state, draft/public separation, stale capabilities, close/reopen, failed saves, startup failure cleanup, expiry recovery, and concurrent startup serialization. Rendering tests check stored HTML reads, one-time legacy backfill, concurrent publication during backfill, atomic publication failures, and upgrading an existing database. They also simulate absent system templates; launcher tests check location-relative paths.
 

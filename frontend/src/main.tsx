@@ -35,6 +35,7 @@ type Notebook = {
   render_url?: string | null;
 };
 type WorkspaceUser = { id: number; login: string; avatar_url?: string };
+type Workspace = { users: WorkspaceUser[]; notebooks: Notebook[] };
 type Auth = {
   user: { login: string; user_id: number; avatar_url?: string } | null;
   can_edit: boolean;
@@ -148,6 +149,22 @@ function cachedNotebooks(): Notebook[] | null {
       return cached.notebooks;
   } catch { /* Storage can be unavailable. */ }
   return null;
+}
+
+// Notebooks whose editor this tab had open. sessionStorage survives a reload but not new tabs, so
+// restoring editing mode never starts a Sandbox in a tab that was not editing.
+const EDITING_KEY = "notebook-factory:editing:v1";
+function editingIds(): string[] {
+  try {
+    const ids = JSON.parse(sessionStorage.getItem(EDITING_KEY) || "[]");
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+  } catch { return []; }
+}
+function rememberEditing(id: string, editing: boolean) {
+  try {
+    const ids = editingIds().filter(item => item !== id);
+    sessionStorage.setItem(EDITING_KEY, JSON.stringify(editing ? [...ids, id] : ids));
+  } catch { /* Storage is optional; editing simply is not restored. */ }
 }
 
 function ChatLoading({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -303,22 +320,24 @@ function App() {
     });
   }, []);
 
+  const applyWorkspace = useCallback(({ users, notebooks: list }: Workspace) => {
+    setUsers(users);
+    setNotebooks(list);
+    setLoading(false);
+    setSelected(current => list.some(n => n.id === current) ? current : null);
+    try {
+      sessionStorage.setItem(WORKSPACE_CACHE, JSON.stringify({ saved: Date.now(), notebooks: list }));
+    } catch { /* Rendering must not depend on browser storage. */ }
+  }, []);
   const sidebarRequest = useRef<Promise<void> | null>(null);
   const refreshSidebar = useCallback(() => {
     if (sidebarRequest.current) return sidebarRequest.current;
-    const request = api<{ users: WorkspaceUser[]; notebooks: Notebook[] }>("/workspace")
-      .then(({ users, notebooks: list }) => {
-        setUsers(users);
-        setNotebooks(list);
-        setLoading(false);
-        setSelected(current => list.some(n => n.id === current) ? current : null);
-        try {
-          sessionStorage.setItem(WORKSPACE_CACHE, JSON.stringify({ saved: Date.now(), notebooks: list }));
-        } catch { /* Rendering must not depend on browser storage. */ }
-      }).finally(() => { sidebarRequest.current = null; });
+    const request = api<Workspace>("/workspace")
+      .then(applyWorkspace)
+      .finally(() => { sidebarRequest.current = null; });
     sidebarRequest.current = request;
     return request;
-  }, []);
+  }, [applyWorkspace]);
   const refresh = useCallback(async () => {
     await Promise.all([
       refreshSidebar(),
@@ -329,10 +348,36 @@ function App() {
     refresh()
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-    // Retain the current sidebar on transient failure; the next tick retries.
-    const timer = window.setInterval(() => { void refreshSidebar().catch(() => {}); }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [refresh, refreshSidebar]);
+  }, [refresh]);
+  // @lat: [[architecture#Live sidebar updates]]
+  useEffect(() => {
+    // The server pushes a full workspace snapshot on connect and after every change.
+    let socket: WebSocket | null = null;
+    let attempts = 0;
+    let retry = 0;
+    let stopped = false;
+    const connect = () => {
+      const url = new URL("/api/workspace/live", location.href);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(url);
+      socket.onopen = () => { attempts = 0; };
+      socket.onmessage = event => {
+        try { applyWorkspace(JSON.parse(event.data)); } catch { /* Ignore malformed frames. */ }
+      };
+      socket.onclose = () => {
+        socket = null;
+        // Sockets close at the function duration limit; reconnect with backoff.
+        if (!stopped) retry = window.setTimeout(connect, Math.min(30_000, 1000 * 2 ** attempts++));
+      };
+    };
+    // Each reconnect receives a fresh snapshot, so no HTTP refresh is needed while disconnected.
+    connect();
+    return () => {
+      stopped = true;
+      window.clearTimeout(retry);
+      socket?.close();
+    };
+  }, [applyWorkspace]);
   useEffect(() => {
     const url = new URL(location.href);
     url.pathname = about ? "/about" : "/";
@@ -484,6 +529,7 @@ function App() {
           if (event.data.result?.ready && event.data.result?.connected !== false) {
             milestone("Python kernel connected — editor ready");
             cleanup(); patchEditor(id, result.token, { ready: true, connected: true });
+            rememberEditing(id, true);
             updateSetup(id, current => ({ ...current, stage: "" }));
             resolve();
           }
@@ -505,6 +551,29 @@ function App() {
       updateSetup(id, current => ({ ...current, finished: Date.now() }));
     }
   }
+
+  // Editing mode survives a reload: reopen the editor this tab had open. The server reuses a
+  // reachable session, or recovers an expired one from the durable draft.
+  const restoredEditors = useRef(new Set<string>());
+  useEffect(() => {
+    if (!authLoaded || !selected || !ownsNotebook || about) return;
+    if (restoredEditors.current.has(selected) || editorsRef.current[selected] || startingEditors.current.has(selected)) return;
+    if (!editingIds().includes(selected)) return;
+    restoredEditors.current.add(selected);
+    const id = selected;
+    void (async () => {
+      for (let attempt = 1; ; attempt++) {
+        try { await openEditor(id); return; }
+        catch (error) {
+          // Another request (such as the previous page's final save) may briefly hold the lease.
+          const busyLease = error instanceof Error && error.message.includes("operation is in progress");
+          if (!busyLease || attempt >= 3) { rememberEditing(id, false); return; }
+          await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoaded, selected, ownsNotebook, about]);
 
   function editorConnected(current: LiveEditor): Promise<boolean> {
     const target = frames.current.get(current.token)?.contentWindow;
@@ -539,6 +608,8 @@ function App() {
             }), editorConnected(current)]);
             if (cancelled || closingTokens.current.has(current.token) || editorsRef.current[current.notebookId]?.token !== current.token) return;
             patchEditor(current.notebookId, current.token, { connected: response.ok && connected, expired: response.status === 410 || response.status === 409 });
+            // 409: another session replaced this editor, so a reload should not reopen it.
+            if (response.status === 409) rememberEditing(current.notebookId, false);
             // Background editors stay disconnected; only recover the currently displayed one.
             if (response.status === 410 && current.connected && selectedRef.current === current.notebookId && !recoveries.current.has(current.token)) {
               recoveries.current.add(current.token);
@@ -832,6 +903,7 @@ function App() {
                         if (!window.confirm(`Delete “${notebook.title}”? This permanently deletes its published notebook, draft, and chat history.`)) return;
                         void action("Deleting notebook…", async () => {
                           await api(`/notebooks/${notebook.id}/delete`, {});
+                          rememberEditing(notebook.id, false);
                           putEditor(notebook.id, null);
                           setSelected(null);
                           setSaved("");
@@ -864,6 +936,7 @@ function App() {
                         try {
                           const source = await saveBridge(current);
                           await api(`/notebooks/${current.notebookId}/close`, { token: current.token, source, publish: true }, AbortSignal.timeout(60000));
+                          rememberEditing(current.notebookId, false);
                           if (editorsRef.current[current.notebookId]?.token === current.token) putEditor(current.notebookId, null);
                           setSetups(items => { const next = { ...items }; delete next[current.notebookId]; return next; });
                           if (selectedRef.current === current.notebookId) {

@@ -16,12 +16,12 @@ from sqlalchemy.pool import NullPool
 
 from config import DATABASE_URL
 
-# Supavisor owns pooling; serverless workers must not retain idle sessions.
+# Neon's pooled endpoint owns pooling; serverless workers must not retain idle sessions.
 # Psycopg can disable prepared statements entirely for transaction pooling.
 engine = create_async_engine(
     DATABASE_URL,
     poolclass=NullPool,
-    **({"connect_args": {"prepare_threshold": None, "sslnegotiation": "postgres"}} if DATABASE_URL.startswith("postgresql+") else {}),
+    **({"connect_args": {"prepare_threshold": None}} if DATABASE_URL.startswith("postgresql+") else {}),
 )
 metadata = MetaData()
 users = Table(

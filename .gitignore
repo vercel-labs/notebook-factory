@@ -10,6 +10,7 @@ node_modules/
 dist/
 *.db
 *.db-*
+.workflow-data/
 .DS_Store
 *.tsbuildinfo
 .vercel

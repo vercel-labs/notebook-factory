@@ -243,7 +243,7 @@
         }
         window.addEventListener("message", function (event) {
           var data = event.data;
-          if (event.source !== window.parent || event.origin !== __PARENT_ORIGIN__ ||
+          if (event.source !== window.parent || __PARENT_ORIGINS__.indexOf(event.origin) === -1 ||
               !data || data.type !== "vercel-notebook-capabilities" || data.token !== bridgeToken || typeof data.id !== "string") return;
           var widget = notebookWidget(window.jupyterapp);
           var kernel = widget && widget.sessionContext && widget.sessionContext.session && widget.sessionContext.session.kernel;
@@ -253,7 +253,7 @@
         });
         window.addEventListener("message", function (event) {
           var data = event.data;
-          if (event.source !== window.parent || event.origin !== __PARENT_ORIGIN__ ||
+          if (event.source !== window.parent || __PARENT_ORIGINS__.indexOf(event.origin) === -1 ||
               !data || data.type !== "vercel-notebook-tool" || data.token !== bridgeToken || typeof data.id !== "string") return;
           var pending = toolQueue.then(function () { return notebookTool(data); });
           toolQueue = pending.catch(function () {});
@@ -267,7 +267,7 @@
         // Export the browser model without contacting the server or waiting on a save dialog.
         window.addEventListener("message", function (event) {
           var data = event.data;
-          if (event.source !== window.parent || event.origin !== __PARENT_ORIGIN__ ||
+          if (event.source !== window.parent || __PARENT_ORIGINS__.indexOf(event.origin) === -1 ||
               !data || data.type !== "vercel-notebook-export" || data.token !== bridgeToken || typeof data.id !== "string") return;
           try {
             var widget = notebookWidget(window.jupyterapp);
@@ -283,7 +283,7 @@
           var data = event.data;
           if (
             event.source !== window.parent ||
-            event.origin !== __PARENT_ORIGIN__ ||
+            __PARENT_ORIGINS__.indexOf(event.origin) === -1 ||
             !data ||
             data.type !== "vercel-notebook-save" ||
             data.token !== bridgeToken ||
