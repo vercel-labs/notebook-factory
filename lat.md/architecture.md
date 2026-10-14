@@ -185,7 +185,7 @@ It also checks bundled rendering templates, workspace-relative launcher paths, p
 
 [[frontend/src/theme.tsx#useTheme]] manages Light, Dark, and System preferences. The compact icon select beside the sidebar logo is keyboard accessible and remains available in the mobile drawer.
 
-System is the default and follows operating-system changes. Explicit choices persist in local storage and synchronize across tabs; unavailable storage does not prevent switching. [[frontend/index.html]] applies the resolved palette before the app loads to avoid a wrong-theme flash.
+System is the default and follows operating-system changes. Explicit choices persist in local storage and synchronize across tabs; unavailable storage does not prevent switching. [[frontend/index.html]] applies the resolved palette before the app loads to avoid a wrong-theme flash. The welcome surface has no radial shadow; the switcher uses a background highlight for keyboard focus, without an outline.
 
 [[frontend/src/main.tsx#publishedAppearance]] adds both notebook palettes and a parent-origin-checked appearance listener to fetched published HTML, including the API fallback. Switching updates the existing iframe without reloading outputs. [[backend/main.py#rendered]] embeds the CSP in fallback HTML so its restrictions survive use as srcdoc. Saved chart images retain their original colors.
 
@@ -195,7 +195,7 @@ Retained Jupyter editors receive the selected palette through the authenticated 
 
 [[frontend/tests/theme.cjs]] checks light and dark colors, persistence, cross-tab synchronization, system preference changes, unavailable storage, responsive switcher placement, and published iframe retention.
 
-The browser suite uses a rendered notebook fixture and mock API/Blob responses. It verifies failed Blob reads use the API fallback and the embedded CSP still blocks network connections. [[editing#Theme bridge tests]] covers authenticated editor updates and rapid changes separately.
+The browser suite uses a rendered notebook fixture and mock API/Blob responses. It verifies missing or failed Blob URLs use the API fallback with same-origin cookies for protected previews, while Blob fetches omit credentials. The embedded CSP still blocks network connections. [[editing#Theme bridge tests]] covers authenticated editor updates and rapid changes separately.
 
 ## Viewport layout
 

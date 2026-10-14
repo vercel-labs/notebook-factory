@@ -10,19 +10,24 @@ const fixture = process.env.RENDER_FIXTURE_PATH ? fs.readFileSync(process.env.RE
   'import sys; sys.path.insert(0, "backend"); from render import isolated_html, render, new_notebook; print(isolated_html(render(new_notebook("Theme preview"))))',
 ], { encoding: 'utf8' });
 let fallbackReads = 0;
+const artifactCookies = [];
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   res.setHeader('Content-Type', 'application/json');
   if (url.pathname === '/api/workspace') return res.end(JSON.stringify({
     users: [{ id: 1, login: 'notebook-author' }],
-    notebooks: ['blob', 'fallback'].map(id => ({ id, owner_id: 1, title: 'Theme notebook ' + id, revision: 1, updated_at: 1, render_url: '/artifact/' + id })),
+    notebooks: ['blob', 'fallback', 'local'].map(id => ({ id, owner_id: 1, title: 'Theme notebook ' + id, revision: 1, updated_at: 1, render_url: id === 'local' ? null : '/artifact/' + id })),
   }));
   if (url.pathname === '/api/auth/me') return res.end(JSON.stringify({ user: null, can_edit: false, configured: true }));
   if (url.pathname.endsWith('/chat-history')) return res.end('{"messages":[],"revision":0}');
   if (url.pathname.endsWith('/chat/state')) return res.end('{"active":false}');
+  if (url.pathname.startsWith('/artifact/')) artifactCookies.push(req.headers.cookie);
   if (url.pathname === '/artifact/fallback') { res.statusCode = 503; return res.end(); }
   if (url.pathname === '/artifact/blob' || url.pathname.endsWith('/render')) {
-    if (url.pathname.endsWith('/render')) fallbackReads++;
+    if (url.pathname.endsWith('/render')) {
+      fallbackReads++;
+      if (!req.headers.cookie?.includes('preview_auth=allowed')) { res.statusCode = 401; return res.end('Deployment authentication required'); }
+    }
     res.setHeader('Content-Type', 'text/html'); return res.end(fixture);
   }
   if (url.pathname.startsWith('/api/')) { res.statusCode = 404; return res.end('{}'); }
@@ -40,6 +45,7 @@ const server = http.createServer((req, res) => {
     const context = await browser.newContext({ colorScheme: 'light', viewport: { width: 1280, height: 850 } });
     context.setDefaultTimeout(10000);
     await context.route('**/*', route => route.request().url().startsWith(origin) ? route.continue() : route.abort());
+    await context.addCookies([{ name: 'preview_auth', value: 'allowed', url: origin }]);
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -68,10 +74,20 @@ const server = http.createServer((req, res) => {
     await page.getByRole('combobox', { name: 'Theme' }).selectOption('system');
     await page.emulateMedia({ colorScheme: 'dark' }); await expectTheme(page, 'dark');
     await page.emulateMedia({ colorScheme: 'light' }); await expectTheme(page, 'light');
+    await page.goto(origin);
+    await page.getByRole('heading', { name: 'Choose a notebook' }).waitFor();
+    assert.equal(await page.locator('.welcome').evaluate(node => getComputedStyle(node).backgroundImage), 'none');
+    await page.getByRole('combobox', { name: 'Theme' }).focus();
+    assert.equal(await page.locator('.theme-switcher').evaluate(node => getComputedStyle(node).outlineStyle), 'none');
+    await page.screenshot({ path: '/tmp/notebook-theme-welcome.png' });
+    await page.goto(origin + '/?notebook=local');
+    const local = await (await page.waitForSelector('iframe[title="Rendered notebook"]')).contentFrame();
+    await expectTheme(local, 'light');
     await page.goto(origin + '/?notebook=fallback');
     const fallback = await (await page.waitForSelector('iframe[title="Rendered notebook"]')).contentFrame();
     await expectTheme(fallback, 'light');
     assert.ok(fallbackReads > 0);
+    assert.ok(artifactCookies.length > 0 && artifactCookies.every(cookie => cookie === undefined), 'Blob fetches omit credentials');
     assert.ok(await fallback.locator('meta[http-equiv="Content-Security-Policy"]').count());
     // Published content still cannot open network connections when fetched into srcdoc.
     assert.equal(await fallback.evaluate(async origin => {
@@ -105,6 +121,6 @@ const server = http.createServer((req, res) => {
     await privatePage.getByRole('combobox', { name: 'Theme' }).selectOption('dark');
     await expectTheme(privatePage, 'dark');
     assert.deepEqual(errors, []);
-    console.log('Theme checks passed: palettes, persistence, tabs, system preference, storage failure, iframe retention, fallback CSP, responsive layout.');
+    console.log('Theme checks passed: palettes, persistence, tabs, system preference, storage failure, iframe retention, authenticated fallback, credential-free Blob fetches, CSP, responsive layout, welcome background, switcher focus.');
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

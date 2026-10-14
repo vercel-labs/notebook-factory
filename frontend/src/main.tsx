@@ -145,15 +145,15 @@ function PublishedNotebook({ notebook, version, theme }: { notebook: Notebook; v
     setFrameLoaded(false);
     const controller = new AbortController();
     const local = `/api/notebooks/${notebook.id}/render?v=${version}`;
-    async function read(url: string) {
-      const response = await fetch(url, { signal: controller.signal, credentials: "omit", referrerPolicy: "no-referrer" });
+    async function read(url: string, credentials: RequestCredentials = "omit") {
+      const response = await fetch(url, { signal: controller.signal, credentials, referrerPolicy: "no-referrer" });
       if (!response.ok) throw new Error("Notebook unavailable");
       return response.text();
     }
     (notebook.render_url ? read(notebook.render_url).catch(error => {
       if (error.name === "AbortError") throw error;
-      return read(local);
-    }) : read(local))
+      return read(local, "same-origin");
+    }) : read(local, "same-origin"))
       .then(value => setHtml(publishedAppearance(value)))
       .catch(error => { if (error.name !== "AbortError") setFailed(true); });
     return () => controller.abort();
