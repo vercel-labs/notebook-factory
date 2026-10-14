@@ -348,6 +348,7 @@ async def provision_editor(id, claim, report=None):
         if row["editor"]:
             old = json.loads(row["editor"])
             try:
+                editor.require_own_session(old)
                 await editor.check_available(old)
                 if old.get("generation") == generation and old.get("name") == editor.shared_runtime_name(owner):
                     return old
@@ -400,6 +401,7 @@ async def checked_editor(id, token):
     current = json.loads(row["editor"]) if row["editor"] else None
     if not current or not secrets.compare_digest(current["token"], token):
         raise HTTPException(409, "This editor session is no longer active. Reopen the editor.")
+    editor.require_own_session(current)
     return row, current
 
 

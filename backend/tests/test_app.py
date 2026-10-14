@@ -1059,3 +1059,22 @@ def test_creation_prompt_is_notebook_introduction(client, prompt):
         assert notebook["cells"][1]["cell_type"] == "code"
         assert "Hello, notebook." in "".join(notebook["cells"][1]["source"])
         assert "Start with a question" in text
+
+
+def test_preview_replaces_inherited_editor_without_touching_it(client, monkeypatch):
+    id = create(client)
+    start = AsyncMock(return_value={"name": "production", "token": "old", "url": "https://example.test"})
+    stop = AsyncMock()
+    monkeypatch.setattr(main.editor, "start", start)
+    monkeypatch.setattr(main.editor, "stop", stop)
+    assert client.post(f"/api/notebooks/{id}/editor", json={}).status_code == 200
+    main.editor.check_available.reset_mock()
+    monkeypatch.setattr(main.editor, "PREVIEW", True)
+    monkeypatch.setattr(main.editor, "generation", lambda: "preview-one")
+    assert client.post(f"/api/notebooks/{id}/editor-status", json={"token": "old"}).status_code == 410
+    start.return_value = {"name": "preview", "token": "new", "url": "https://preview.test", "runtime_scope": "preview-one"}
+    result = client.post(f"/api/notebooks/{id}/editor", json={})
+    assert result.status_code == 200
+    assert result.json()["token"] == "new"
+    main.editor.check_available.assert_not_awaited()
+    stop.assert_not_awaited()

@@ -52,7 +52,7 @@ Previews have no fixed domain, so [[backend/config.py]] trusts the runtime `VERC
 
 Unknown Host headers never steer redirects. Neon’s native Vercel connection requires resource readiness and runs its database-branch action for Preview only. New preview deployments receive a branch connection string injected at deployment time; Production keeps its existing database.
 
-Branches start with a copy of the parent data. Database writes are isolated, but copied user Sandbox names and notebook Blob paths still reference shared resources. Existing deployments retain their previous connection until redeployed. See [Neon’s integration guide](https://neon.com/docs/guides/vercel-managed-integration#enable-automated-preview-branching-recommended) for branch lifecycle and cleanup.
+Branches start with a copy of the parent data. Database writes and [[editing#Preview runtime isolation|preview runtimes]] are isolated. Copied notebook Blob paths still reference shared resources. Existing deployments retain their previous connection until redeployed. See [Neon’s integration guide](https://neon.com/docs/guides/vercel-managed-integration#enable-automated-preview-branching-recommended) for branch lifecycle and cleanup.
 
 ## Local development
 

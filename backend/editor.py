@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from vercel import sandbox
 from vercel.api import session
 
-from config import ALLOWED_ORIGINS, MAX_BYTES
+from config import ALLOWED_ORIGINS, MAX_BYTES, PREVIEW
 from runtime_registry import load_runtime, runtime_lease, store_runtime
 from sandbox_environment import prepared
 
@@ -179,7 +179,23 @@ async def _start_runtime(owner, report=lambda kind, message: None):
             raise
 
 
+def runtime_scope():
+    return generation() if PREVIEW else None
+
+
+def owns_session(editor):
+    return editor.get("runtime_scope") == runtime_scope()
+
+
+def require_own_session(editor):
+    if not owns_session(editor):
+        raise HTTPException(410, "Editor belongs to another deployment. Reopen the saved draft.")
+
+
 def shared_runtime_name(owner):
+    if PREVIEW:
+        identity = runtime_scope() + ":" + owner["sandbox_name"]
+        return "nf-preview-" + hashlib.sha256(identity.encode()).hexdigest()[:32]
     return owner["sandbox_name"]
 
 
@@ -248,12 +264,13 @@ async def start(source: str, report=lambda kind, message: None, *, notebook_id: 
         report("progress", "Notebook file ready")
         return {
             "name": current["name"], "shared": True, "base_url": current["base_url"],
-            "path": path, "token": token,
+            "path": path, "token": token, "runtime_scope": runtime_scope(),
             "url": current["base_url"] + "/doc/workspaces/nf-" + token + "/tree/" + quote(path, safe="/") + "?nf_editor_token=" + token,
         }
 
 
 async def check_available(editor):
+    require_own_session(editor)
     async with session():
         current = {**editor, "base_url": editor.get("base_url") or editor["url"].split("/doc/", 1)[0]}
         if editor.get("shared"):
@@ -265,6 +282,7 @@ async def check_available(editor):
 
 
 async def read(editor: dict, *, extend=True):
+    require_own_session(editor)
     async with session():
         try:
             instance = await sandbox.get_sandbox(name=editor["name"])
@@ -304,6 +322,8 @@ async def _destroy_runtime(editor: dict):
 
 
 async def stop(editor: dict):
+    if not owns_session(editor):
+        return
     if not editor.get("shared"):
         await _destroy_runtime(editor)
         return
@@ -340,6 +360,7 @@ async def delete_workspace(notebook_id: str, *, owner):
 
 
 async def keep_alive(editor: dict):
+    require_own_session(editor)
     async with runtime_lease(editor["name"]), session():
         instance = await sandbox.get_sandbox(name=editor["name"])
         await _extend(instance)
