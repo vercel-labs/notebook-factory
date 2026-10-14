@@ -1,8 +1,10 @@
 import { About } from "./About";
 import { Chat } from "./Chat";
+import { ThemeSwitcher, useTheme, type Theme } from "./theme";
 import publishedNotebookLayout from "../../backend/assets/published_notebook.css?raw";
 import notebookTheme from "../../backend/assets/notebook_theme.css?raw";
 import notebookDarkTheme from "../../backend/templates/lab/static/theme-dark.css?raw";
+import notebookLightTheme from "../../backend/templates/lab/static/theme-light.css?raw";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -105,37 +107,68 @@ async function startEditor(
   }
 }
 
-function PublishedNotebook({ notebook, version }: { notebook: Notebook; version: number }) {
+function publishedAppearance(html: string) {
+  // Scope the light variables so both palettes can live in the same document.
+  const css = `${notebookDarkTheme}\n${notebookLightTheme.replace(":root", ':root[data-theme="light"]')}\n${notebookTheme}\n${publishedNotebookLayout}`;
+  const initial = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  const script = `(() => {
+    function apply(theme) {
+      document.documentElement.dataset.theme = theme;
+      if (document.body) {
+        document.body.dataset.jpThemeLight = String(theme === "light");
+        document.body.dataset.jpThemeName = theme === "light" ? "JupyterLab Light" : "JupyterLab Dark";
+      }
+    }
+    apply(${JSON.stringify(initial)});
+    document.addEventListener("DOMContentLoaded", () => apply(document.documentElement.dataset.theme));
+    addEventListener("message", event => {
+      if (event.source !== parent || event.origin !== ${JSON.stringify(location.origin)} || event.data?.type !== "notebook-factory-theme") return;
+      if (event.data.theme === "light" || event.data.theme === "dark") apply(event.data.theme);
+    });
+  })();`;
+  return html.replace(/<\/head>/i, `<style>${css}</style><script>${script}</script></head>`);
+}
+
+function PublishedNotebook({ notebook, version, theme }: { notebook: Notebook; version: number; theme: Theme }) {
   const [html, setHtml] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [frameLoaded, setFrameLoaded] = useState(false);
+  const frame = useRef<HTMLIFrameElement>(null);
+  function syncTheme() {
+    // Sandboxed published documents have opaque origins; only send appearance data.
+    frame.current?.contentWindow?.postMessage({ type: "notebook-factory-theme", theme }, "*");
+  }
+  useEffect(syncTheme, [theme]);
   useEffect(() => {
     setHtml(null);
     setFailed(false);
     setFrameLoaded(false);
-    if (!notebook.render_url) return;
     const controller = new AbortController();
-    fetch(notebook.render_url, { signal: controller.signal, credentials: "omit", referrerPolicy: "no-referrer" })
-      .then(response => {
-        if (!response.ok) throw new Error("Notebook unavailable");
-        return response.text();
-      })
-      .then(value => value.replace("</head>", `<style>${publishedNotebookLayout}</style></head>`))
-      .then(value => setHtml(value.includes('id="notebook-factory-theme"') ? value : value.replace("</head>", `<style id="notebook-factory-theme">${notebookDarkTheme}\n${notebookTheme}\n${publishedNotebookLayout}</style></head>`)))
+    const local = `/api/notebooks/${notebook.id}/render?v=${version}`;
+    async function read(url: string, credentials: RequestCredentials = "omit") {
+      const response = await fetch(url, { signal: controller.signal, credentials, referrerPolicy: "no-referrer" });
+      if (!response.ok) throw new Error("Notebook unavailable");
+      return response.text();
+    }
+    (notebook.render_url ? read(notebook.render_url).catch(error => {
+      if (error.name === "AbortError") throw error;
+      return read(local, "same-origin");
+    }) : read(local, "same-origin"))
+      .then(value => setHtml(publishedAppearance(value)))
       .catch(error => { if (error.name !== "AbortError") setFailed(true); });
     return () => controller.abort();
-  }, [notebook.render_url]);
-  const useBlob = notebook.render_url && !failed;
-  if (useBlob && html === null) return <div className="empty" role="status">Loading notebook…</div>;
+  }, [notebook.id, notebook.render_url, version]);
+  if (failed) return <div className="empty" role="alert">Notebook unavailable. Reload to try again.</div>;
+  if (html === null) return <div className="empty" role="status">Loading notebook…</div>;
   return <div className="published-notebook" aria-busy={!frameLoaded}>
     {!frameLoaded && <div className="notebook-loading" role="status"><LoaderCircle size={16} className="spin" />Loading notebook…</div>}
     <iframe
+    ref={frame}
     title="Rendered notebook"
     style={{ visibility: frameLoaded ? "visible" : "hidden" }}
-    onLoad={() => setFrameLoaded(true)}
+    onLoad={() => { syncTheme(); setFrameLoaded(true); }}
     sandbox="allow-scripts allow-downloads"
-    srcDoc={useBlob ? html! : undefined}
-    src={useBlob ? undefined : `/api/notebooks/${notebook.id}/render?v=${version}`}
+    srcDoc={html}
     referrerPolicy="no-referrer"
   /></div>;
 }
@@ -179,6 +212,7 @@ function ChatLoading({ open, onClose }: { open: boolean; onClose: () => void }) 
 }
 
 function App() {
+  const { theme, preference, choose: chooseTheme } = useTheme();
   const [auth, setAuth] = useState<Auth>({
     user: null,
     can_edit: false,
@@ -268,6 +302,12 @@ function App() {
   const saveAgain = useRef(new Set<string>());
   const closingTokens = useRef(new Set<string>());
   const frames = useRef(new Map<string, HTMLIFrameElement>());
+  function syncEditorTheme(current: LiveEditor) {
+    frames.current.get(current.token)?.contentWindow?.postMessage(
+      { type: "vercel-notebook-theme", token: current.token, theme }, new URL(current.url).origin,
+    );
+  }
+  useEffect(() => { Object.values(editors).forEach(syncEditorTheme); }, [theme, editors]);
   const [saved, setSaved] = useState("");
   const [saveNotice, setSaveNotice] = useState<{ id: string; at: number } | null>(null);
   useEffect(() => {
@@ -703,7 +743,7 @@ function App() {
             </svg>
             <span>Python Notebooks</span>
           </a>
-
+          <ThemeSwitcher preference={preference} onChange={chooseTheme} />
         </div>
         <label className="search">
           <Search size={15} />
@@ -966,12 +1006,13 @@ function App() {
                 key={current.token} ref={node => {
                   if (node) frames.current.set(current.token, node); else frames.current.delete(current.token);
                 }} title={`Jupyter editor: ${notebooks.find(item => item.id === current.notebookId)?.title || current.notebookId}`} src={current.url}
+                onLoad={() => syncEditorTheme(current)}
                 style={editorReady && current.notebookId === selected ? undefined : { display: "none" }} referrerPolicy="no-referrer"
                 allow="clipboard-read; clipboard-write"
               />)}
               {notebook && !editorReady && <PublishedNotebook
                 key={`${selected}-${renderVersion}-${notebook.render_url || "local"}`}
-                notebook={notebook} version={renderVersion}
+                notebook={notebook} version={renderVersion} theme={theme}
               />}
             </div>
             {notebook && !authLoaded && <ChatLoading open={chatOpen} onClose={() => setChatOpen(false)} />}

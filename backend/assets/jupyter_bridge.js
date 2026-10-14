@@ -15,6 +15,42 @@
         var fitFrame;
         var fitTimeouts = [];
         var serializedContexts = new WeakSet();
+        var requestedTheme;
+        var appliedTheme;
+        var themeTimer;
+        var changingTheme = false;
+
+        async function applyTheme() {
+          window.clearTimeout(themeTimer);
+          if (changingTheme || !requestedTheme || requestedTheme === appliedTheme) return;
+          var app = window.jupyterapp;
+          if (!app || !app.commands || !app.commands.hasCommand("apputils:change-theme")) {
+            themeTimer = window.setTimeout(applyTheme, 100);
+            return;
+          }
+          var theme = requestedTheme;
+          changingTheme = true;
+          try {
+            await app.restored;
+            await app.commands.execute("apputils:change-theme", { theme: theme === "light" ? "JupyterLab Light" : "JupyterLab Dark" });
+            appliedTheme = theme;
+          } catch (error) {
+            console.warn("Could not change notebook theme", error);
+          } finally {
+            changingTheme = false;
+            if (theme !== requestedTheme) void applyTheme();
+          }
+        }
+
+        window.addEventListener("message", function (event) {
+          var data = event.data;
+          if (event.source !== window.parent || __PARENT_ORIGINS__.indexOf(event.origin) === -1 ||
+              !data || data.type !== "vercel-notebook-theme" || data.token !== bridgeToken ||
+              (data.theme !== "light" && data.theme !== "dark")) return;
+          document.documentElement.dataset.theme = data.theme;
+          requestedTheme = data.theme;
+          void applyTheme();
+        });
 
         function serializeSaves(context) {
           if (!context || serializedContexts.has(context)) return;

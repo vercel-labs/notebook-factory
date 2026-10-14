@@ -13,7 +13,7 @@ The configured production application is [notebooks.sh](https://notebooks.sh), u
 | Vercel project | `notebook-factory` |
 | Project ID | `prj_46j0HKfLl1LIgBGdDMaXXEpTUpFh` |
 | Team ID | `team_TtmJZYmD3tcLBLqWOhoVawd1` |
-| Database | Connected Neon Marketplace integration (`neon-emerald-anchor`), Production and Preview |
+| Database | Connected Neon Marketplace integration (`neon-emerald-anchor`); Preview deployments use database branches |
 | User enrollment | Any Vercel account, up to 300 admitted users |
 
 These are the project details verified from the new project linkage on October 2, 2026. Local linkage lives in the ignored `.vercel/project.json`. Production has been deployed directly from the working tree with the CLI; a successful deployment does not imply those changes have been committed or pushed.
@@ -50,7 +50,9 @@ Marketplace connection supplies the database variables. The application reads Ne
 
 Previews have no fixed domain, so [[backend/config.py]] trusts the runtime `VERCEL_BRANCH_URL` and `VERCEL_URL` hosts; APP_URL defaults to the branch alias. Production trusts only its HTTPS APP_URL.
 
-Unknown Host headers never steer redirects. Previews share Production's database integration, so preview sign-ins and edits act on production data and Sandbox names.
+Unknown Host headers never steer redirects. Neon’s native Vercel connection requires resource readiness and runs its database-branch action for Preview only. New preview deployments receive a branch connection string injected at deployment time; Production keeps its existing database.
+
+Branches start with a copy of the parent data. Database writes and [[editing#Preview runtime isolation|preview runtimes]] are isolated. Copied notebook Blob paths still reference shared resources. Existing deployments retain their previous connection until redeployed. See [Neon’s integration guide](https://neon.com/docs/guides/vercel-managed-integration#enable-automated-preview-branching-recommended) for branch lifecycle and cleanup.
 
 ## Local development
 

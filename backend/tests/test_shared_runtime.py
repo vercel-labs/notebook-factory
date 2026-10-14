@@ -181,3 +181,34 @@ async def test_stale_notebook_reopens_on_existing_runtime_without_replacement(mo
     instance.fs.write_text.assert_awaited_once_with(result['path'], 'saved source')
     destroy.assert_not_awaited()
     create.assert_not_awaited()
+
+
+# @lat: [[editing#Preview runtime isolation tests]]
+async def test_preview_runtime_isolation(monkeypatch):
+    owner = {"sandbox_name": "nf-alice"}
+    monkeypatch.setattr(editor, "PREVIEW", False)
+    assert editor.shared_runtime_name(owner) == "nf-alice"
+    monkeypatch.setattr(editor, "PREVIEW", True)
+    monkeypatch.setenv("VERCEL_DEPLOYMENT_ID", "preview-one")
+    first = editor.shared_runtime_name(owner)
+    assert first != owner["sandbox_name"]
+    assert first == editor.shared_runtime_name(owner)
+    assert first != editor.shared_runtime_name({"sandbox_name": "nf-bob"})
+    monkeypatch.setenv("VERCEL_DEPLOYMENT_ID", "preview-two")
+    second = editor.shared_runtime_name(owner)
+    assert first != second
+    assert editor.workspace_drive_name("user:" + first) != editor.workspace_drive_name("user:" + second)
+    provider = AsyncMock()
+    monkeypatch.setattr(editor.sandbox, "get_sandbox", provider)
+    monkeypatch.setattr(editor, "load_runtime", AsyncMock())
+    for inherited in ({"name": "nf-alice"}, {"name": first, "runtime_scope": "preview-one"}):
+        for operation in (editor.check_available, editor.read, editor.keep_alive):
+            with pytest.raises(editor.HTTPException) as error:
+                await operation(inherited)
+            assert error.value.status_code == 410
+        await editor.stop(inherited)
+    provider.assert_not_awaited()
+    editor.load_runtime.assert_not_awaited()
+    assert editor.owns_session({"runtime_scope": "preview-two"})
+    monkeypatch.setattr(editor, "PREVIEW", False)
+    assert not editor.owns_session({"runtime_scope": "preview-two"})

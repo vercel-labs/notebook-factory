@@ -109,13 +109,13 @@ Reference publishing verifies hashes of prepared notebook/HTML files and creates
 
 ## Deployment generations
 
-Editor environments belong to the deployment that created them. Opening or reconnecting after a deployment replaces an older environment instead of reusing its embedded Jupyter bridge.
+Editor environments belong to the deployment that created them. Opening or reconnecting uses the current deployment’s environment instead of reusing an older embedded Jupyter bridge.
 
 [[backend/editor.py#generation]] uses Vercel's deployment ID (deployment URL fallback); local development hashes bundled editor assets, provisioning code, and Python dependency declarations. Legacy sessions without a generation are stale. This policy governs live editor reuse. The shared dependency drive contains no notebook, bridge, app origin, or editor token, so it can be reused while each deployment injects fresh app assets.
 
 [[backend/main.py#provision_editor]] checks runtime availability without reading its notebook file. A replacement always receives the Postgres draft, because manual disk saves can lag behind browser edits. Automatic recovery exports the current browser document first. Opening from another tab can recover only the last acknowledged database draft; it cannot recover unexported edits from a different browser.
 
-The next open on a new deployment replaces the shared runtime, interrupting kernels still using the previous generation. Their browser documents remain exportable for recovery. Regression coverage verifies same-deployment reuse, failed replacement, preservation of a database draft that differs from the Sandbox file, and stale-token rejection.
+In production, the next open on a new deployment replaces the shared runtime, interrupting kernels still using the previous generation. Previews use separate runtimes per deployment and leave older VMs to expire. Their browser documents remain exportable for recovery. Regression coverage verifies same-deployment reuse, failed replacement, preservation of a database draft that differs from the Sandbox file, and stale-token rejection.
 
 ## Plot font fallback
 
@@ -205,7 +205,7 @@ The bridge reports document readiness separately from kernel connectivity. A loa
 
 ## Dark notebook styling
 
-The editor starts with JupyterLab Dark and shared neutral surface overrides. Matplotlib defaults to dark figures and axes with light labels, ticks, and a contrasting series palette.
+The editor follows the app’s light or dark selection with shared neutral surface overrides. Matplotlib retains dark figures and axes with light labels, ticks, and a contrasting series palette.
 
 [[backend/assets/jupyter_launcher.py]] writes the bundled [Matplotlib configuration](../backend/assets/matplotlibrc) after dependency restoration and before launching Jupyter. This updates both new and cached workspaces without importing Matplotlib at startup or rebuilding the dependency drive. DejaVu Sans and Noto fallback fonts remain configured. Users can override plot styles explicitly; saved plot images need rerunning to change their appearance. The agent preserves dark defaults and uses Plotly's dark template when generating charts.
 
@@ -216,3 +216,18 @@ A stable Sandbox name must not make an old notebook endpoint appear current afte
 Availability checks compare the notebook capability with the runtime registry and the current VM's public route before requesting Jupyter status. A mismatch returns expiry so provisioning can reopen the saved draft on the current shared runtime without destroying another notebook's kernel. Regression tests cover route changes, capability changes on the same host, warm reuse, and current-route server errors.
 
 Startup errors live with their notebook's progress state. Switching notebooks during startup never displays that error on the newly selected notebook. Returning shows the failure and permits retry; retry clears the old error. Browser regression holds startup open, switches away, fails it, and verifies scoped error display and successful retry.
+
+## Theme bridge tests
+
+[[backend/tests/test_save_bridge.cjs]] verifies appearance updates require the trusted parent window, allowed origin, matching editor token, and a supported theme. Rapid selections serialize Jupyter commands and settle on the latest preference.
+
+
+## Preview runtime isolation
+
+Each preview deployment has separate per-user runtimes and writable drives, so copied database records cannot replace production kernels or another preview's VM.
+
+[[backend/editor.py#shared_runtime_name]] derives preview names from the deployment generation and user Sandbox name. [[backend/editor.py#owns_session]] rejects inherited editor records before provider access; cleanup ignores them. Opening restores the database draft into the preview's own workspace. Production retains its stable per-user runtime. Preview drives do not carry files across deployments; saved notebook sources do.
+
+## Preview runtime isolation tests
+
+[[backend/tests/test_shared_runtime.py#test_preview_runtime_isolation]] verifies separate names and drives for users and deployments, and confirms inherited sessions cannot read, probe, extend, or stop another environment's runtime. [[backend/tests/test_app.py#test_preview_replaces_inherited_editor_without_touching_it]] verifies reopening a copied session without probing or stopping it.

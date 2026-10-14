@@ -22,7 +22,7 @@ from auth import require_owner, require_owner_read, require_user
 from auth import router as auth_router
 from config import APP_URL
 from db import engine, initialize, notebooks, timestamp, users
-from render import CONTENT_POLICY, new_notebook, render, themed_html, validate
+from render import CONTENT_POLICY, isolated_html, new_notebook, render, validate
 
 log = logging.getLogger(__name__)
 
@@ -242,7 +242,7 @@ async def rendered(id: str):
             )
         await workspace_events.notify()
     return HTMLResponse(
-        themed_html(html),
+        isolated_html(html),
         headers={"Content-Security-Policy": "sandbox allow-scripts; " + CONTENT_POLICY},
     )
 
@@ -348,6 +348,7 @@ async def provision_editor(id, claim, report=None):
         if row["editor"]:
             old = json.loads(row["editor"])
             try:
+                editor.require_own_session(old)
                 await editor.check_available(old)
                 if old.get("generation") == generation and old.get("name") == editor.shared_runtime_name(owner):
                     return old
@@ -400,6 +401,7 @@ async def checked_editor(id, token):
     current = json.loads(row["editor"]) if row["editor"] else None
     if not current or not secrets.compare_digest(current["token"], token):
         raise HTTPException(409, "This editor session is no longer active. Reopen the editor.")
+    editor.require_own_session(current)
     return row, current
 
 
