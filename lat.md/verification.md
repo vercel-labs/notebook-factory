@@ -27,9 +27,11 @@ Progress tests check installer events, final editor delivery, reuse, failure mes
 
 ## Browser checks
 
-The frontend has been smoke-tested with Playwright and temporary mock services. Those scripts are outside the repository and are not a checked-in browser test suite.
+Checked-in Playwright suites cover [[frontend/tests/notebook_flows.cjs|notebook flows]], [[frontend/tests/reload_state.cjs|reload state]], and [[architecture#Appearance tests|appearance]] with mock services. Earlier smoke checks used temporary scripts.
 
 Checks exercised incremental and split stream frames, logs visible before setup completes, elapsed time, ready/error transitions, editor handoff, and close behavior. Earlier close checks verified iframe removal during shutdown and restoration after a failed close.
+
+The theme suite creates a CSP-isolated rendered notebook through the backend’s uv environment, or accepts an existing fixture through `RENDER_FIXTURE_PATH`. Set `PLAYWRIGHT_MODULE` if Playwright is installed elsewhere; run `node frontend/tests/theme.cjs` after building the frontend.
 
 A mocked browser run does not prove Vercel's deployed streaming behavior or Vercel authentication. The frontend build checks TypeScript and bundling, not runtime behavior against live infrastructure.
 

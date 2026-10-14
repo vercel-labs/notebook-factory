@@ -14,15 +14,50 @@ function bridge(context, content, url = "https://sandbox.test/token/doc/tree/not
     parent,
     addEventListener: (name, callback) => { const previous = handlers[name]; handlers[name] = previous ? async event => { await previous(event); await callback(event); } : callback; },
     setTimeout() {},
+    clearTimeout() {},
   };
+  const document = { documentElement: { dataset: {} } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../assets/jupyter_bridge.js'), 'utf8'), {
     window, URL, WeakSet, Promise,
-    document: { documentElement: {} },
+    document,
     ResizeObserver: class { observe() {} },
     __PARENT_ORIGINS__: ['https://app.test'],
   });
-  return { handlers, parent, shell };
+  return { handlers, parent, shell, window, document };
 }
+
+// @lat: [[editing#Notebook editing#Theme bridge tests]]
+test('theme changes authenticate the parent and serialize rapid selections', async () => {
+  const { handlers, parent, window, document } = bridge({ path: 'notebook.ipynb', save() {} });
+  const calls = [];
+  let release;
+  window.jupyterapp.restored = Promise.resolve();
+  window.jupyterapp.commands = {
+    hasCommand: () => true,
+    async execute(command, args) {
+      assert.equal(command, 'apputils:change-theme');
+      calls.push(args.theme);
+      if (calls.length === 1) await new Promise(resolve => { release = resolve; });
+    },
+  };
+  const send = (theme, overrides = {}) => handlers.message({
+    source: parent, origin: 'https://app.test',
+    data: { type: 'vercel-notebook-theme', token: 'token', theme }, ...overrides,
+  });
+  await send('light', { source: {} });
+  await send('light', { origin: 'https://evil.test' });
+  await send('light', { data: { type: 'vercel-notebook-theme', token: 'wrong', theme: 'light' } });
+  await send('invalid');
+  assert.equal(document.documentElement.dataset.theme, undefined);
+  assert.deepEqual(calls, []);
+  await send('light');
+  await send('dark');
+  assert.equal(document.documentElement.dataset.theme, 'dark');
+  assert.deepEqual(calls, ['JupyterLab Light']);
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['JupyterLab Light', 'JupyterLab Dark']);
+});
 
 // @lat: [[editing#Save serialization]]
 test('native and bridge saves wait for the preceding metadata refresh', async () => {

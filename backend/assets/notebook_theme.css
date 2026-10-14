@@ -18,8 +18,8 @@
   --jp-content-font-color2: #a1a1a1;
   --jp-cell-editor-background: #111;
   --jp-cell-editor-border-color: #333;
-  --jp-cell-editor-active-background: #111;
-  --jp-cell-editor-active-border-color: #52a8ff;
+  --jp-cell-editor-active-background: var(--jp-cell-editor-background);
+  --jp-cell-editor-active-border-color: var(--jp-content-link-color);
   --jp-cell-inprompt-font-color: #888;
   --jp-cell-outprompt-font-color: #888;
   --jp-brand-color1: #52a8ff;
@@ -29,11 +29,38 @@
   --jp-content-font-family: var(--jp-ui-font-family);
   --jp-code-font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-html, body { background: #0a0a0a !important; color: #ededed; }
-.jp-Notebook { background: #0a0a0a; }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --jp-layout-color0: #fff;
+  --jp-layout-color1: #fafafa;
+  --jp-layout-color2: #f0f0f0;
+  --jp-layout-color3: #eaeaea;
+  --jp-layout-color4: #ddd;
+  --jp-border-color0: #bbb;
+  --jp-border-color1: #ddd;
+  --jp-border-color2: #eaeaea;
+  --jp-border-color3: #f0f0f0;
+  --jp-ui-font-color0: #000;
+  --jp-ui-font-color1: #171717;
+  --jp-ui-font-color2: #666;
+  --jp-content-font-color0: #000;
+  --jp-content-font-color1: #171717;
+  --jp-content-font-color2: #666;
+  --jp-cell-editor-background: #f5f5f5;
+  --jp-cell-editor-border-color: #ddd;
+  --jp-cell-editor-active-background: #fff;
+  --jp-cell-editor-active-border-color: #0672ce;
+  --jp-cell-inprompt-font-color: #666;
+  --jp-cell-outprompt-font-color: #666;
+  --jp-brand-color1: #0672ce;
+  --jp-content-link-color: #0672ce;
+}
+
+html, body { background: var(--jp-layout-color1) !important; color: var(--jp-content-font-color1); }
+.jp-Notebook { background: var(--jp-layout-color1); }
 .jp-InputArea-editor, .jp-Toolbar, .jp-Dialog-content { border-radius: 2px; }
-.jp-RenderedHTMLCommon pre, .jp-RenderedHTMLCommon code { background: #171717; color: #ededed; }
-.jp-RenderedHTMLCommon tbody tr:nth-child(odd) { background: #111; }
-.jp-RenderedHTMLCommon tbody tr:hover { background: #222; }
-.jp-RenderedHTMLCommon a { color: #52a8ff; }
-* { scrollbar-color: #444 transparent; scrollbar-width: thin; }
+.jp-RenderedHTMLCommon pre, .jp-RenderedHTMLCommon code { background: var(--jp-layout-color2); color: var(--jp-content-font-color1); }
+.jp-RenderedHTMLCommon tbody tr:nth-child(odd) { background: var(--jp-cell-editor-background); }
+.jp-RenderedHTMLCommon tbody tr:hover { background: var(--jp-layout-color3); }
+.jp-RenderedHTMLCommon a { color: var(--jp-content-link-color); }
+* { scrollbar-color: var(--jp-border-color0) transparent; scrollbar-width: thin; }

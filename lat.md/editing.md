@@ -205,7 +205,7 @@ The bridge reports document readiness separately from kernel connectivity. A loa
 
 ## Dark notebook styling
 
-The editor starts with JupyterLab Dark and shared neutral surface overrides. Matplotlib defaults to dark figures and axes with light labels, ticks, and a contrasting series palette.
+The editor follows the app’s light or dark selection with shared neutral surface overrides. Matplotlib retains dark figures and axes with light labels, ticks, and a contrasting series palette.
 
 [[backend/assets/jupyter_launcher.py]] writes the bundled [Matplotlib configuration](../backend/assets/matplotlibrc) after dependency restoration and before launching Jupyter. This updates both new and cached workspaces without importing Matplotlib at startup or rebuilding the dependency drive. DejaVu Sans and Noto fallback fonts remain configured. Users can override plot styles explicitly; saved plot images need rerunning to change their appearance. The agent preserves dark defaults and uses Plotly's dark template when generating charts.
 
@@ -216,3 +216,7 @@ A stable Sandbox name must not make an old notebook endpoint appear current afte
 Availability checks compare the notebook capability with the runtime registry and the current VM's public route before requesting Jupyter status. A mismatch returns expiry so provisioning can reopen the saved draft on the current shared runtime without destroying another notebook's kernel. Regression tests cover route changes, capability changes on the same host, warm reuse, and current-route server errors.
 
 Startup errors live with their notebook's progress state. Switching notebooks during startup never displays that error on the newly selected notebook. Returning shows the failure and permits retry; retry clears the old error. Browser regression holds startup open, switches away, fails it, and verifies scoped error display and successful retry.
+
+## Theme bridge tests
+
+[[backend/tests/test_save_bridge.cjs]] verifies appearance updates require the trusted parent window, allowed origin, matching editor token, and a supported theme. Rapid selections serialize Jupyter commands and settle on the latest preference.

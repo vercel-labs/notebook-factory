@@ -121,9 +121,9 @@ Browser API calls stay on the app origin. Editor HTTP and WebSocket traffic conn
 
 [[backend/render.py#render]] converts notebooks to HTML during creation and publication. Public views fetch published HTML from Blob’s CDN into a sandboxed iframe, without executing cells or running nbconvert. [[backend/render.py#validate]] enforces valid notebook structure and the size limit from [[backend/config.py#MAX_BYTES]].
 
-Published iframes stay hidden behind a dark loading surface until their load event, preventing a white flash during navigation.
+Published iframes stay hidden behind a theme-matched loading surface until their load event, preventing a white flash during navigation.
 
-Published HTML uses the JupyterLab dark palette with shared notebook surface overrides. Read-only spacing is 12px on desktop and 6px at mobile widths, with a compact prompt gutter and no empty Markdown prompt gutter. On mobile, long code snippets and preformatted text scroll horizontally within their own blocks rather than wrapping or widening the page. The shared published-layout stylesheet also applies to previously cached HTML. The browser and fallback endpoint also theme older cached HTML without rerunning cells; existing plot images retain their saved colors.
+Published HTML follows the selected light or dark palette with shared notebook surface overrides. Read-only spacing is 12px on desktop and 6px at mobile widths, with a compact prompt gutter and no empty Markdown prompt gutter. On mobile, long code snippets and preformatted text scroll horizontally within their own blocks rather than wrapping or widening the page. The shared published-layout stylesheet also applies to previously cached HTML. The browser and fallback endpoint also theme older cached HTML without rerunning cells; existing plot images retain their saved colors.
 
 Lab and base templates are bundled in [backend/templates](https://github.com/vercel-labs/notebook-factory/tree/main/backend/templates), with explicit template search paths. Functions cannot rely on system-installed Jupyter data directories. Public downloads also return `published`, even for the signed-in owner.
 
@@ -181,11 +181,27 @@ Save and close require the current editor capability token in the JSON body. Sta
 It also checks bundled rendering templates, workspace-relative launcher paths, progress events, and lease release after startup failure. [[verification]] describes how to run the suite and what requires live infrastructure.
 
 
+## Appearance
+
+[[frontend/src/theme.tsx#useTheme]] manages Light, Dark, and System preferences. The compact icon select beside the sidebar logo is keyboard accessible and remains available in the mobile drawer.
+
+System is the default and follows operating-system changes. Explicit choices persist in local storage and synchronize across tabs; unavailable storage does not prevent switching. [[frontend/index.html]] applies the resolved palette before the app loads to avoid a wrong-theme flash.
+
+[[frontend/src/main.tsx#publishedAppearance]] adds both notebook palettes and a parent-origin-checked appearance listener to fetched published HTML, including the API fallback. Switching updates the existing iframe without reloading outputs. [[backend/main.py#rendered]] embeds the CSP in fallback HTML so its restrictions survive use as srcdoc. Saved chart images retain their original colors.
+
+Retained Jupyter editors receive the selected palette through the authenticated [[backend/assets/jupyter_bridge.js|editor bridge]], which changes the JupyterLab theme without replacing the frame or document. Shared [[backend/assets/notebook_theme.css|notebook styles]] keep editor and published surfaces consistent.
+
+## Appearance tests
+
+[[frontend/tests/theme.cjs]] checks light and dark colors, persistence, cross-tab synchronization, system preference changes, unavailable storage, responsive switcher placement, and published iframe retention.
+
+The browser suite uses a rendered notebook fixture and mock API/Blob responses. It verifies failed Blob reads use the API fallback and the embedded CSP still blocks network connections. [[editing#Theme bridge tests]] covers authenticated editor updates and rapid changes separately.
+
 ## Viewport layout
 
 [Frontend styles](../frontend/src/style.css) fixes the app to the dynamic viewport height and suppresses outer document scrolling and overscroll. The notebook surface fills the remaining space; its compact panel header contains the title and notebook actions.
 
-The app uses Geist typography, black and neutral dark surfaces, high-contrast actions, semantic status colors, and 2px control/panel corners. Avatars and status dots remain circular.
+The app uses Geist typography, neutral light and dark palettes, high-contrast actions, semantic status colors, and 2px control/panel corners. Avatars and status dots remain circular.
 
 Notebook and chat panels use the available workspace width with a fixed 12px outer inset and 12px gap between panels at every breakpoint. They share compact, aligned headers; chat actions are grouped at the right. Errors appear below the workspace with matching horizontal margins. Title spacing is compact.
 
